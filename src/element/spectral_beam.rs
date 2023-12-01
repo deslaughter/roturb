@@ -208,7 +208,7 @@ impl Beam {
                 .zip(qp_weights.iter())
                 .map(
                     |(((((((&loc, &xi), x0), x0_prime), &R0), &Mstar), &Cstar), &weight)| {
-                        QuadraturePointRef {
+                        QuadraturePoint {
                             loc,
                             xi,
                             weight: weight,
@@ -217,6 +217,7 @@ impl Beam {
                             R0,
                             Mstar,
                             Cstar,
+                            ..Default::default()
                         }
                     },
                 )
@@ -231,7 +232,7 @@ impl Beam {
 #[derive(Debug)]
 struct Element {
     nodes: Nodes,
-    qps: Vec<QuadraturePointRef>,
+    qps: Vec<QuadraturePoint>,
     shape_func_interp: DMatrix<f64>,
     shape_func_deriv: DMatrix<f64>,
     jacobian: MatrixXx3<f64>,
@@ -246,8 +247,8 @@ pub struct Nodes {
     R0: Vec<UnitQuaternion<f64>>,
 }
 
-#[derive(Debug)]
-pub struct QuadraturePointRef {
+#[derive(Debug, Default)]
+pub struct QuadraturePoint {
     loc: f64,
     xi: f64,
     weight: f64,
@@ -256,22 +257,7 @@ pub struct QuadraturePointRef {
     R0: UnitQuaternion<f64>,
     Mstar: Matrix6<f64>,
     Cstar: Matrix6<f64>,
-}
-
-impl QuadraturePointRef {
-    fn sectional_strain_inertial_basis(
-        &self,
-        u_prime: &Vector3<f64>,
-        R: &UnitQuaternion<f64>,
-        R_prime: &UnitQuaternion<f64>,
-    ) -> Vector6<f64> {
-        let e1 = self.x0_prime - u_prime - R * self.x0_prime;
-        let e2 = kappa(R, R_prime);
-        Vector6::new(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2])
-    }
-}
-
-pub struct QuadraturePoint {
+    //
     u_prime: Vector3<f64>,
     R: UnitQuaternion<f64>,
     R_prime: UnitQuaternion<f64>,
@@ -286,12 +272,21 @@ pub struct QuadraturePoint {
     Q: Matrix6<f64>,
 }
 
-impl Element {
-    fn sections(
+impl QuadraturePoint {
+    fn sectional_strain_inertial_basis(
         &self,
-        u_node: &MatrixXx3<f64>,
-        R_node: &[UnitQuaternion<f64>],
-    ) -> Vec<QuadraturePoint> {
+        u_prime: &Vector3<f64>,
+        R: &UnitQuaternion<f64>,
+        R_prime: &UnitQuaternion<f64>,
+    ) -> Vector6<f64> {
+        let e1 = self.x0_prime - u_prime - R * self.x0_prime;
+        let e2 = kappa(R, R_prime);
+        Vector6::new(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2])
+    }
+}
+
+impl Element {
+    fn update(&mut self, u_node: &MatrixXx3<f64>, R_node: &[UnitQuaternion<f64>]) {
         // Calculate derivative of displacement at each quadrature point
         let u_prime = (&self.shape_func_deriv * u_node).component_div(&self.jacobian);
 
@@ -302,62 +297,50 @@ impl Element {
         let R_prime = self.interp_node_rotation_deriv_to_qp(&R_node);
 
         // Calculate section data in inertial basis at each quadrature point
-        izip!(
-            self.qps.iter(),
+        for (qp, &R, &R_p, u_p) in izip!(
+            self.qps.iter_mut(),
             R.iter(),
             R_prime.iter(),
             u_prime.transpose().column_iter()
-        )
-        .map(|(qp, &R, &R_p, u_p)| {
+        ) {
             let RR0 = (R * qp.R0).to_rotation_matrix();
             let mut _RR0 = Matrix6::from_element(0.);
             _RR0.index_mut((..3, ..3)).copy_from(RR0.matrix());
             _RR0.index_mut((3.., 3..)).copy_from(RR0.matrix());
-            let u_p = Vector3::from(u_p);
-            let strain: Vector6<f64> = qp.sectional_strain_inertial_basis(&u_p, &R, &R_p);
-            let C = _RR0 * qp.Cstar * _RR0.transpose();
-            let C11 = C.index((..3, ..3));
-            let C21 = C.index((3.., ..3));
-            let C12 = C.index((..3, 3..));
-            let M = _RR0 * qp.Mstar * _RR0.transpose();
-            let Fc: Vector6<f64> = C * strain;
-            let Nt = Vector3::new(Fc[0], Fc[1], Fc[2]).skew_symmetric_matrix();
-            let Mt = Vector3::new(Fc[3], Fc[4], Fc[5]).skew_symmetric_matrix();
+            qp.u_prime = Vector3::from(u_p);
+            qp.strain = qp.sectional_strain_inertial_basis(&qp.u_prime, &R, &R_p);
+            qp.C = _RR0 * qp.Cstar * _RR0.transpose();
+            let C11 = qp.C.index((..3, ..3));
+            let C21 = qp.C.index((3.., ..3));
+            let C12 = qp.C.index((..3, 3..));
+            qp.M = _RR0 * qp.Mstar * _RR0.transpose();
+            qp.Fc = qp.C * qp.strain;
+            let Nt = qp.Fc.xyz().skew_symmetric_matrix();
+            let Mt = Vector3::new(qp.Fc[3], qp.Fc[4], qp.Fc[5]).skew_symmetric_matrix();
             let x0pu0pSS: Matrix3<f64> =
-                &qp.x0_prime.skew_symmetric_matrix() + &u_p.skew_symmetric_matrix();
-            let tmp = x0pu0pSS.transpose() * Nt;
-            let Fd = Vector6::new(0., 0., 0., tmp[0], tmp[1], tmp[2]);
+                &qp.x0_prime.skew_symmetric_matrix() + &qp.u_prime.skew_symmetric_matrix();
 
-            let mut O: Matrix6<f64> = Matrix6::zeros();
-            O.index_mut((..3, 3..)).copy_from(&(-Nt + C11 * x0pu0pSS));
-            O.index_mut((3.., 3..)).copy_from(&(-Mt + C21 * x0pu0pSS));
+            qp.Fd.fill(0.);
+            qp.Fd
+                .index_mut((3.., 0))
+                .copy_from(&(x0pu0pSS.transpose() * qp.Fc.xyz()));
 
-            let mut P: Matrix6<f64> = Matrix6::zeros();
-            P.index_mut((3.., ..3))
+            qp.O.fill(0.);
+            qp.O.index_mut((..3, 3..))
+                .copy_from(&(-Nt + C11 * x0pu0pSS));
+            qp.O.index_mut((3.., 3..))
+                .copy_from(&(-Mt + C21 * x0pu0pSS));
+
+            qp.P.fill(0.);
+            qp.P.index_mut((3.., ..3))
                 .copy_from(&(Nt + x0pu0pSS.transpose() * C11));
-            P.index_mut((3.., 3..))
+            qp.P.index_mut((3.., 3..))
                 .copy_from(&(x0pu0pSS.transpose() * C12));
 
-            let mut Q: Matrix6<f64> = Matrix6::zeros();
-            Q.index_mut((3.., 3..))
+            qp.Q.fill(0.);
+            qp.Q.index_mut((3.., 3..))
                 .copy_from(&(x0pu0pSS.transpose() * (-Nt + C11 * x0pu0pSS)));
-
-            QuadraturePoint {
-                u_prime: u_p,
-                R: R,
-                R_prime: R_p,
-                RR0: RR0,
-                M,
-                C,
-                strain: strain,
-                Fc,
-                Fd,
-                O,
-                P,
-                Q,
-            }
-        })
-        .collect()
+        }
     }
     fn interp_node_rotation_to_qp(&self, Rs: &[UnitQuaternion<f64>]) -> Vec<UnitQuaternion<f64>> {
         let R = MatrixXx4::from_row_iterator(
@@ -370,12 +353,12 @@ impl Element {
             .map(|r| {
                 let q = Quaternion::new(r[3], r[0], r[1], r[2]);
                 let qu = UnitQuaternion::from_quaternion(q);
-                // let v = r.transpose().xyz();
-                // let w = (1. - v.dot(&v)).sqrt();
-                // let qua = UnitQuaternion::from_quaternion(Quaternion::new(w, v.x, v.y, v.z));
-                // println!("q  ={}", q);
-                // println!("qu ={:?}", qu.euler_angles());
-                // println!("qua={:?}", qua.euler_angles());
+                let v = r.transpose().xyz();
+                let w = (1. - v.dot(&v)).sqrt();
+                let qua = UnitQuaternion::from_quaternion(Quaternion::new(w, v.x, v.y, v.z));
+                println!("q  ={}", q);
+                println!("qu ={:?}", qu.euler_angles());
+                println!("qua={:?}", qua.euler_angles());
                 qu
             })
             .collect()
@@ -398,12 +381,12 @@ impl Element {
             .map(|r| {
                 let q = Quaternion::new(r[3], r[0], r[1], r[2]);
                 let qu = UnitQuaternion::from_quaternion(q);
-                // let v = r.transpose().xyz();
-                // let w = (1. - v.dot(&v)).sqrt();
-                // let qua = UnitQuaternion::from_quaternion(Quaternion::new(w, v.x, v.y, v.z));
-                // println!("q  ={}", q);
-                // println!("qu ={:?}", qu.euler_angles());
-                // println!("qua={:?}", qua.euler_angles());
+                let v = r.transpose().xyz();
+                let w = (1. - v.dot(&v)).sqrt();
+                let qua = UnitQuaternion::from_quaternion(Quaternion::new(w, v.x, v.y, v.z));
+                println!("q  ={}", q);
+                println!("qu ={:?}", qu.euler_angles());
+                println!("qua={:?}", qua.euler_angles());
                 qu
             })
             .collect()
@@ -489,7 +472,7 @@ mod tests {
             &vec![Section::new(0.0, &mat), Section::new(10.0, &mat)],
         );
 
-        let elem = beam.element(7, 0., beam.length);
+        let mut elem = beam.element(7, 0., beam.length);
 
         // Get xyz displacements at node locations
         let u = MatrixXx3::from_row_iterator(
@@ -503,7 +486,7 @@ mod tests {
         // Get vector of unit quaternions describing the nodal rotation
         let R: Vec<UnitQuaternion<f64>> = elem.nodes.locs.iter().map(|&si| rot(si)).collect();
 
-        let qp_sections = elem.sections(&u, &R);
+        elem.update(&u, &R);
     }
 
     #[test]
