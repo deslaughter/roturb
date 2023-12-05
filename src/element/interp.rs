@@ -2,6 +2,10 @@ use std::f64::consts::PI;
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 
+//------------------------------------------------------------------------------
+// Lagrange Polynomials
+//------------------------------------------------------------------------------
+
 pub fn lagrange_polynomial(x: f64, xs: &[f64]) -> Vec<f64> {
     xs.iter()
         .enumerate()
@@ -9,7 +13,7 @@ pub fn lagrange_polynomial(x: f64, xs: &[f64]) -> Vec<f64> {
             xs.iter()
                 .enumerate()
                 .filter(|(m, _)| *m != j)
-                .map(|(m, &xm)| (x - xm) / (xj - xm))
+                .map(|(_, &xm)| (x - xm) / (xj - xm))
                 .product()
         })
         .collect()
@@ -35,100 +39,11 @@ pub fn lagrange_polynomial_derivative(x: f64, xs: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-pub fn legendre_polynomial(n: usize, xi: f64) -> f64 {
-    match n {
-        0 => 1.0,
-        1 => xi,
-        _ => {
-            let n_f = n as f64;
-            ((2. * n_f - 1.) * xi * legendre_polynomial(n - 1, xi)
-                - (n_f - 1.) * legendre_polynomial(n - 2, xi))
-                / n_f
-        }
-    }
-}
-
-pub fn legendre_polynomial_derivative_1(n: usize, xi: f64) -> f64 {
-    match n {
-        0 => 0.,
-        1 => 1.,
-        2 => 3. * xi,
-        _ => {
-            (2. * (n as f64) - 1.) * legendre_polynomial(n - 1, xi)
-                + legendre_polynomial_derivative_1(n - 2, xi)
-        }
-    }
-}
-
-pub fn legendre_polynomial_derivative_2(n: usize, xi: f64) -> f64 {
-    (2. * xi * legendre_polynomial_derivative_1(n, xi)
-        - ((n * (n + 1)) as f64) * legendre_polynomial(n, xi))
-        / (1. - (xi * xi))
-}
-
-pub fn legendre_polynomial_derivative_3(n: usize, xi: f64) -> f64 {
-    (4. * xi * legendre_polynomial_derivative_2(n, xi)
-        - ((n * (n + 1) - 2) as f64) * legendre_polynomial_derivative_1(n, xi))
-        / (1. - (xi * xi))
-}
-
-pub fn gauss_legendre_lobotto_points(order: usize) -> Vec<f64> {
-    let n = order + 1;
-    let n_2 = n / 2;
-    let nf = n as f64;
-    let mut x = vec![0.0; n];
-    // let mut w = vec![0.0; n];
-    x[0] = -1.;
-    x[n - 1] = 1.;
-    for i in 1..n_2 {
-        let mut xi = (1. - (3. * (nf - 2.)) / (8. * (nf - 1.).powi(3)))
-            * ((4. * (i as f64) + 1.) * PI / (4. * (nf - 1.) + 1.)).cos();
-        let mut error = 1.0;
-        while error > 1e-16 {
-            let y = legendre_polynomial_derivative_1(n - 1, xi);
-            let y1 = legendre_polynomial_derivative_2(n - 1, xi);
-            let y2 = legendre_polynomial_derivative_3(n - 1, xi);
-            let dx = 2. * y * y1 / (2. * y1 * y1 - y * y2);
-            xi -= dx;
-            error = dx.abs();
-        }
-        x[i] = -xi;
-        x[n - i - 1] = xi;
-        // w[i] = 2. / (nf * (nf - 1.) * legendre_polynomial(n - 1, x[i]).powi(2));
-        // w[n - i - 1] = w[i];
-    }
-    if n % 2 != 0 {
-        x[n_2] = 0.;
-        // w[n_2] = 2.0 / ((nf * (nf - 1.)) * legendre_polynomial(n - 1, x[n_2]).powi(2));
-    }
-    x
-}
-
-pub fn quaternion_from_tangent_twist(tangent: &Vector3<f64>, twist: f64) -> UnitQuaternion<f64> {
-    let e1 = tangent.clone();
-    let a = if e1[0] > 0. { 1. } else { -1. };
-    let e2 = Vector3::new(
-        -a * e1[1] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
-        a * e1[0] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
-        0.,
-    );
-    let e3 = e1.cross(&e2);
-    let r0 = Matrix3::from_columns(&[e1, e2, e3]);
-    let q_twist = UnitQuaternion::new(e1 * twist * PI / 180.);
-    let q0 = UnitQuaternion::from_matrix(&r0);
-    q_twist * q0
-}
-
 #[cfg(test)]
-mod tests {
-
-    use approx::assert_relative_eq;
-    use nalgebra::{
-        dvector, DMatrix, DVector, Matrix3, MatrixXx3, MatrixXx4, RowVector3, UnitQuaternion,
-        Vector4,
-    };
+mod test_lagrange {
 
     use super::*;
+    use nalgebra::{dvector, DVector};
 
     #[test]
     fn test_lagrange_polynomial() {
@@ -171,6 +86,53 @@ mod tests {
         let w4 = lagrange_polynomial_derivative(1.5, &xs.as_slice());
         assert_eq!(DVector::from_vec(w4).dot(&ys), 2.0 * 1.5);
     }
+}
+
+//------------------------------------------------------------------------------
+// Legendre Polynomials
+//------------------------------------------------------------------------------
+
+pub fn legendre_polynomial(n: usize, xi: f64) -> f64 {
+    match n {
+        0 => 1.0,
+        1 => xi,
+        _ => {
+            let n_f = n as f64;
+            ((2. * n_f - 1.) * xi * legendre_polynomial(n - 1, xi)
+                - (n_f - 1.) * legendre_polynomial(n - 2, xi))
+                / n_f
+        }
+    }
+}
+
+pub fn legendre_polynomial_derivative_1(n: usize, xi: f64) -> f64 {
+    match n {
+        0 => 0.,
+        1 => 1.,
+        2 => 3. * xi,
+        _ => {
+            (2. * (n as f64) - 1.) * legendre_polynomial(n - 1, xi)
+                + legendre_polynomial_derivative_1(n - 2, xi)
+        }
+    }
+}
+
+pub fn legendre_polynomial_derivative_2(n: usize, xi: f64) -> f64 {
+    (2. * xi * legendre_polynomial_derivative_1(n, xi)
+        - ((n * (n + 1)) as f64) * legendre_polynomial(n, xi))
+        / (1. - (xi * xi))
+}
+
+pub fn legendre_polynomial_derivative_3(n: usize, xi: f64) -> f64 {
+    (4. * xi * legendre_polynomial_derivative_2(n, xi)
+        - ((n * (n + 1) - 2) as f64) * legendre_polynomial_derivative_1(n, xi))
+        / (1. - (xi * xi))
+}
+
+#[cfg(test)]
+mod test_legendre {
+
+    use super::*;
 
     #[test]
     fn test_legendre_polynomial() {
@@ -225,6 +187,48 @@ mod tests {
         assert_eq!(legendre_polynomial_derivative_1(6, 0.), 0.);
         assert_eq!(legendre_polynomial_derivative_1(6, 1.), 21.);
     }
+}
+
+//------------------------------------------------------------------------------
+// Gauss Legendre Lobotto Points and Weights
+//------------------------------------------------------------------------------
+
+pub fn gauss_legendre_lobotto_points(order: usize) -> Vec<f64> {
+    let n = order + 1;
+    let n_2 = n / 2;
+    let nf = n as f64;
+    let mut x = vec![0.0; n];
+    // let mut w = vec![0.0; n];
+    x[0] = -1.;
+    x[n - 1] = 1.;
+    for i in 1..n_2 {
+        let mut xi = (1. - (3. * (nf - 2.)) / (8. * (nf - 1.).powi(3)))
+            * ((4. * (i as f64) + 1.) * PI / (4. * (nf - 1.) + 1.)).cos();
+        let mut error = 1.0;
+        while error > 1e-16 {
+            let y = legendre_polynomial_derivative_1(n - 1, xi);
+            let y1 = legendre_polynomial_derivative_2(n - 1, xi);
+            let y2 = legendre_polynomial_derivative_3(n - 1, xi);
+            let dx = 2. * y * y1 / (2. * y1 * y1 - y * y2);
+            xi -= dx;
+            error = dx.abs();
+        }
+        x[i] = -xi;
+        x[n - i - 1] = xi;
+        // w[i] = 2. / (nf * (nf - 1.) * legendre_polynomial(n - 1, x[i]).powi(2));
+        // w[n - i - 1] = w[i];
+    }
+    if n % 2 != 0 {
+        x[n_2] = 0.;
+        // w[n_2] = 2.0 / ((nf * (nf - 1.)) * legendre_polynomial(n - 1, x[n_2]).powi(2));
+    }
+    x
+}
+
+#[cfg(test)]
+mod test_gll {
+
+    use super::*;
 
     #[test]
     fn test_gauss_legendre_lobotto_points() {
@@ -249,6 +253,38 @@ mod tests {
         ];
         assert_eq!(gauss_legendre_lobotto_points(6), p);
     }
+}
+
+//------------------------------------------------------------------------------
+// Quaternion
+//------------------------------------------------------------------------------
+
+pub fn quaternion_from_tangent_twist(tangent: &Vector3<f64>, twist: f64) -> UnitQuaternion<f64> {
+    let e1 = tangent.clone();
+    let a = if e1[0] > 0. { 1. } else { -1. };
+    let e2 = Vector3::new(
+        -a * e1[1] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
+        a * e1[0] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
+        0.,
+    );
+    let e3 = e1.cross(&e2);
+    let r0 = Matrix3::from_columns(&[e1, e2, e3]);
+    let q_twist = UnitQuaternion::new(e1 * twist * PI / 180.);
+    let q0 = UnitQuaternion::from_matrix(&r0);
+    q_twist * q0
+}
+
+//------------------------------------------------------------------------------
+// Integration test
+//------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod test_integration {
+
+    use approx::assert_relative_eq;
+    use nalgebra::{DMatrix, DVector, Matrix3, MatrixXx3, MatrixXx4, UnitQuaternion, Vector4};
+
+    use super::*;
 
     #[test]
     fn test_shape_functions() {
