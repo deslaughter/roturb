@@ -1,2 +1,3 @@
+pub mod gebt;
 pub mod interp;
-pub mod spectral_beam;
+pub mod quadrature;
