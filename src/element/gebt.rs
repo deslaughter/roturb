@@ -1,21 +1,17 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use core::num;
-use std::{
-    f64::consts::PI,
-    ops::{AddAssign, DivAssign},
-};
+use std::ops::AddAssign;
 
-use itertools::{izip, Itertools};
+use itertools::izip;
+
 use nalgebra::{
     DMatrix, DVector, Dyn, Matrix1xX, Matrix3, Matrix3x4, Matrix3xX, Matrix4xX, Matrix6, Matrix6xX,
-    MatrixXx3, MatrixXx4, OMatrix, Quaternion, Rotation3, UnitQuaternion, Vector3, Vector4,
-    Vector6,
+    OMatrix, Quaternion, Rotation3, UnitQuaternion, Vector3, Vector4, Vector6,
 };
 
 use super::{
-    interp::{gauss_legendre_lobotto_points, lagrange_polynomial, lagrange_polynomial_derivative},
+    interp::{lagrange_polynomial, lagrange_polynomial_derivative},
     quadrature::Quadrature,
 };
 
@@ -34,6 +30,109 @@ pub struct Element {
     pub shape_func_deriv: MatrixNxQ,
     pub jacobian: Matrix1xX<f64>,
 }
+
+impl Element {
+    pub fn displace(&mut self, node_u: &Matrix3xX<f64>, node_r: &Matrix4xX<f64>) {
+        // Interpolate displacement and displacement derivative to quadrature points
+        let u: Matrix3xX<f64> = interp_position(&self.shape_func_interp, &node_u);
+        let u_prime: Matrix3xX<f64> =
+            interp_position_derivative(&self.shape_func_deriv, &self.jacobian, &node_u);
+
+        // Interpolate rotation and rotation derivative to quadrature points
+        let r: Matrix4xX<f64> = interp_rotation(&self.shape_func_interp, &node_r);
+        let r_prime: Matrix4xX<f64> =
+            interp_rotation_derivative(&self.shape_func_deriv, &self.jacobian, &node_r);
+
+        // Calculate quadrature point values with applied displacement/rotation
+        for (i, qp) in self.qps.iter_mut().enumerate() {
+            let R = Vector4::from(r.column(i)).as_unit_quaternion();
+            let Rp = Vector4::from(r_prime.column(i)).as_quaternion();
+            qp.displace(
+                &Vector3::from(u.column(i)),
+                &Vector3::from(u_prime.column(i)),
+                &R,
+                &Rp,
+            )
+        }
+    }
+
+    pub fn apply_force(&mut self, forces: &Matrix6xX<f64>) {
+        let Fext: Matrix6xX<f64> = interp_force(&self.shape_func_interp, forces);
+        for (qp, Fext) in self.qps.iter_mut().zip(Fext.column_iter()) {
+            qp.Fext.copy_from(&Fext);
+        }
+    }
+
+    pub fn stiffness_matrix(&self) -> DMatrix<f64> {
+        let mut K: DMatrix<f64> = DMatrix::zeros(6 * self.nodes.num, 6 * self.nodes.num);
+        for i in 0..self.nodes.num {
+            for j in 0..self.nodes.num {
+                let mut Kij = K.fixed_view_mut::<6, 6>(i * 6, j * 6);
+                for (sl, qp) in self.qps.iter().enumerate() {
+                    Kij.add_assign(
+                        qp.weight
+                            * (self.shape_func_interp[(i, sl)]
+                                * qp.P
+                                * self.shape_func_deriv[(j, sl)]
+                                + self.shape_func_interp[(i, sl)]
+                                    * qp.Q
+                                    * self.shape_func_interp[(j, sl)]
+                                    * self.jacobian[sl]
+                                + self.shape_func_deriv[(i, sl)]
+                                    * qp.C
+                                    * self.shape_func_deriv[(j, sl)]
+                                    / self.jacobian[sl]
+                                + self.shape_func_deriv[(i, sl)]
+                                    * qp.O
+                                    * self.shape_func_interp[(j, sl)]),
+                    );
+                }
+            }
+        }
+        K
+    }
+
+    pub fn residual_vector(&self) -> DVector<f64> {
+        // Calculate residual matrix
+        let mut Residual: Matrix6xX<f64> = Matrix6xX::zeros(self.nodes.num);
+        for (i, mut col) in Residual.column_iter_mut().enumerate() {
+            for (sl, qp) in self.qps.iter().enumerate() {
+                col.add_assign(
+                    // Elastic & dissipative force
+                    (self.shape_func_deriv[(i, sl)] * qp.Fc
+                        + self.jacobian[sl] * self.shape_func_interp[(i, sl)] * qp.Fd)
+                        * qp.weight -
+                        // G & External force
+                        self.shape_func_interp[(i,sl)]*qp.Fext*self.jacobian[sl]*qp.weight,
+                );
+            }
+        }
+        DVector::from_column_slice(Residual.as_slice())
+    }
+
+    pub fn constraint_residual_vector(&self) -> Vector6<f64> {
+        let r = Vector4::from(self.nodes.r.column(0)).as_unit_quaternion();
+        let rot_vec: Vector3<f64> = r.scaled_axis();
+        Vector6::new(
+            self.nodes.u[0],
+            self.nodes.u[1],
+            self.nodes.u[2],
+            rot_vec[0],
+            rot_vec[1],
+            rot_vec[2],
+        )
+    }
+
+    pub fn constraints_gradient_matrix(&self) -> Matrix6xX<f64> {
+        let mut B = Matrix6xX::zeros(self.nodes.num * 6);
+        B.fill_diagonal(1.);
+        B
+    }
+}
+
+//------------------------------------------------------------------------------
+// Nodes
+//------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Nodes {
@@ -158,6 +257,7 @@ impl Nodes {
                 M_star,
                 C_star,
                 weight: w,
+                Fext: Vector6::zeros(),
                 ..Default::default()
             },
         )
@@ -174,88 +274,9 @@ impl Nodes {
     }
 }
 
-impl Element {
-    pub fn displace(&mut self, node_u: &Matrix3xX<f64>, node_r: &Matrix4xX<f64>) {
-        // Interpolate displacement/rotation and derivatives to quadrature points
-        let u: Matrix3xX<f64> = interp_position(&self.shape_func_interp, &node_u);
-        let u_prime: Matrix3xX<f64> =
-            interp_position_derivative(&self.shape_func_deriv, &self.jacobian, &node_u);
-        let r: Matrix4xX<f64> = interp_rotation(&self.shape_func_interp, &node_r);
-        let r_prime: Matrix4xX<f64> =
-            interp_rotation_derivative(&self.shape_func_deriv, &self.jacobian, &node_r);
-
-        // Calculate displaced quadrature point values
-        for (i, mut qp) in self.qps.iter_mut().enumerate() {
-            let R = Vector4::from(r.column(i)).as_unit_quaternion();
-            let Rp = Vector4::from(r_prime.column(i)).as_quaternion();
-            qp.displace(
-                &Vector3::from(u.column(i)),
-                &Vector3::from(u_prime.column(i)),
-                &R,
-                &Rp,
-            )
-        }
-    }
-    pub fn stiffness_matrix(&self) -> DMatrix<f64> {
-        let mut K: DMatrix<f64> = DMatrix::zeros(6 * self.nodes.num, 6 * self.nodes.num);
-        for i in 0..self.nodes.num {
-            for j in 0..self.nodes.num {
-                let mut Kij = K.fixed_view_mut::<6, 6>(i * 6, j * 6);
-                for (sl, qp) in self.qps.iter().enumerate() {
-                    Kij.add_assign(
-                        qp.weight
-                            * (self.shape_func_interp[(i, sl)]
-                                * qp.P
-                                * self.shape_func_deriv[(j, sl)]
-                                + self.shape_func_interp[(i, sl)]
-                                    * qp.Q
-                                    * self.shape_func_interp[(j, sl)]
-                                    * self.jacobian[sl]
-                                + self.shape_func_deriv[(i, sl)]
-                                    * qp.C
-                                    * self.shape_func_deriv[(j, sl)]
-                                    / self.jacobian[sl]
-                                + self.shape_func_deriv[(i, sl)]
-                                    * qp.O
-                                    * self.shape_func_interp[(j, sl)]),
-                    );
-                }
-            }
-        }
-        K
-    }
-    pub fn residual_vector(&self) -> DVector<f64> {
-        // Calculate residual matrix
-        let mut Residual: Matrix6xX<f64> = Matrix6xX::zeros(self.nodes.num);
-        for (i, mut col) in Residual.column_iter_mut().enumerate() {
-            for (sl, qp) in self.qps.iter().enumerate() {
-                col.add_assign(
-                    (self.shape_func_deriv[(i, sl)] * qp.Fc
-                        + self.jacobian[sl] * self.shape_func_interp[(i, sl)] * qp.Fd)
-                        * qp.weight,
-                );
-            }
-        }
-        DVector::from_column_slice(Residual.as_slice())
-    }
-    pub fn constraint_residual_vector(&self) -> Vector6<f64> {
-        let r = Vector4::from(self.nodes.r0.column(0)).as_unit_quaternion();
-        let logmap: Vector3<f64> = r.scaled_axis();
-        Vector6::new(
-            self.nodes.u[0],
-            self.nodes.u[1],
-            self.nodes.u[2],
-            logmap[0],
-            logmap[1],
-            logmap[2],
-        )
-    }
-    pub fn constraints_gradient_matrix(&self) -> Matrix6xX<f64> {
-        let mut B = Matrix6xX::zeros(self.nodes.num * 6);
-        B.fill_diagonal(1.);
-        B
-    }
-}
+//------------------------------------------------------------------------------
+// Quadrature Points
+//------------------------------------------------------------------------------
 
 // QuadraturePoint defines the quadrature point data in the reference configuration
 #[derive(Debug, Default)]
@@ -278,6 +299,7 @@ pub struct QuadraturePoint {
     C: Matrix6<f64>, // Stiffness matrix
     Fc: Vector6<f64>,
     Fd: Vector6<f64>,
+    Fext: Vector6<f64>,
     O: Matrix6<f64>,
     P: Matrix6<f64>,
     Q: Matrix6<f64>,
@@ -361,6 +383,56 @@ impl QuadraturePoint {
 }
 
 //------------------------------------------------------------------------------
+// Traits
+//------------------------------------------------------------------------------
+
+pub trait VecToQuatExt {
+    fn as_quaternion(&self) -> Quaternion<f64>;
+    fn as_unit_quaternion(&self) -> UnitQuaternion<f64>;
+}
+
+impl VecToQuatExt for Vector4<f64> {
+    fn as_quaternion(&self) -> Quaternion<f64> {
+        Quaternion::new(self[0], self[1], self[2], self[3])
+    }
+    fn as_unit_quaternion(&self) -> UnitQuaternion<f64> {
+        let q = self.as_quaternion();
+        if q.norm() == 0. {
+            UnitQuaternion::identity()
+        } else {
+            UnitQuaternion::from_quaternion(q)
+        }
+    }
+}
+
+pub trait SkewSymmExt {
+    fn skew_symmetric_matrix(&self) -> Matrix3<f64>;
+}
+
+impl SkewSymmExt for Vector3<f64> {
+    fn skew_symmetric_matrix(&self) -> Matrix3<f64> {
+        Matrix3::new(
+            0.0, -self[2], self[1], self[2], 0.0, -self[0], -self[1], self[0], 0.0,
+        )
+    }
+}
+
+pub trait QuatExt {
+    fn F(&self) -> Matrix3x4<f64>;
+    fn to_vector(&self) -> Vector4<f64>;
+}
+
+impl QuatExt for UnitQuaternion<f64> {
+    fn F(&self) -> Matrix3x4<f64> {
+        let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
+        Matrix3x4::new(-q1, q0, -q3, q2, -q2, q3, q0, -q1, -q3, -q2, q1, q0)
+    }
+    fn to_vector(&self) -> Vector4<f64> {
+        Vector4::new(self.w, self.i, self.j, self.k)
+    }
+}
+
+//------------------------------------------------------------------------------
 // Testing
 //------------------------------------------------------------------------------
 
@@ -371,6 +443,8 @@ mod tests {
     use itertools::Itertools;
     use nalgebra::{Matrix3xX, Matrix4xX};
 
+    use crate::element::interp::{gauss_legendre_lobotto_points, quaternion_from_tangent_twist};
+
     use super::*;
 
     #[test]
@@ -378,7 +452,7 @@ mod tests {
         let fz = |t: f64| -> f64 { t - 2. * t * t };
         let fy = |t: f64| -> f64 { -2. * t + 3. * t * t };
         let fx = |t: f64| -> f64 { 5. * t };
-        let ft = |t: f64| -> f64 { 0. * t * t };
+        // let ft = |t: f64| -> f64 { 0. * t * t };
 
         let scale = 0.1;
         let ux = |t: f64| -> f64 { scale * t * t };
@@ -552,6 +626,185 @@ mod tests {
         assert_relative_eq!(K[(0, 0)], 1.7424, epsilon = 1.0e-4);
         assert_relative_eq!(K[(0, 1)], 2.5965, epsilon = 1.0e-4);
     }
+
+    #[test]
+    fn test_displaced_beam() {
+        //----------------------------------------------------------------------
+        // Initial configuration
+        //----------------------------------------------------------------------
+
+        let fx = |s: f64| -> f64 { 10. * s + 1. };
+        let fz = |s: f64| -> f64 { 0. };
+        let fy = |s: f64| -> f64 { 0. };
+        let ft = |s: f64| -> f64 { 0. };
+        let xi: DVector<f64> = DVector::from_vec(gauss_legendre_lobotto_points(4));
+        let s: DVector<f64> = xi.add_scalar(1.) / 2.;
+
+        let num_nodes = s.len();
+
+        // Node initial position
+        let x0: Matrix3xX<f64> = Matrix3xX::from_iterator(
+            num_nodes,
+            s.iter().flat_map(|&si| vec![fx(si), fy(si), fz(si)]),
+        );
+        assert_relative_eq!(
+            x0,
+            Matrix3xX::from_vec(vec![
+                1.,
+                0.,
+                0., // column 1
+                2.726731646460114,
+                0.,
+                0., // column 2
+                6.,
+                0.,
+                0., // column 3
+                9.273268353539887,
+                0.,
+                0., // column 4
+                11.,
+                0.,
+                0., // column 5
+            ]),
+        );
+
+        // Node initial rotation
+        let interp_deriv: DMatrix<f64> = DMatrix::from_iterator(
+            num_nodes,
+            num_nodes,
+            s.iter()
+                .flat_map(|&si| lagrange_polynomial_derivative(si, s.as_slice())),
+        );
+        let mut tangent: Matrix3xX<f64> = &x0 * interp_deriv;
+        for mut c in tangent.column_iter_mut() {
+            c.normalize_mut();
+        }
+
+        let r0: Matrix4xX<f64> = Matrix4xX::from_columns(
+            s.iter()
+                .zip(tangent.column_iter())
+                .map(|(&si, tan)| {
+                    quaternion_from_tangent_twist(&Vector3::from(tan), ft(si)).to_vector()
+                })
+                .collect::<Vec<Vector4<f64>>>()
+                .as_slice(),
+        );
+        assert_relative_eq!(
+            r0,
+            Matrix4xX::from_vec(vec![
+                1., 0., 0., 0., // column 1
+                1., 0., 0., 0., // column 2
+                1., 0., 0., 0., // column 3
+                1., 0., 0., 0., // column 4
+                1., 0., 0., 0., // column 5
+            ])
+        );
+
+        // Create nodes structure
+        let nodes = Nodes::new(&s, &xi, &x0, &r0);
+
+        //----------------------------------------------------------------------
+        // Displacements and rotations from reference
+        //----------------------------------------------------------------------
+
+        let scale = 0.0;
+        let ux = |t: f64| -> f64 { scale * t * t };
+        let uy = |t: f64| -> f64 {
+            if t == 1. {
+                0.001
+            } else {
+                scale * (t * t * t - t * t)
+            }
+        };
+        let uz = |t: f64| -> f64 { scale * (t * t + 0.2 * t * t * t) };
+        let rot = |t: f64| -> Matrix3<f64> {
+            Matrix3::new(
+                1.,
+                0.,
+                0.,
+                0.,
+                (scale * t).cos(),
+                -(scale * t).sin(),
+                0.,
+                (scale * t).sin(),
+                (scale * t).cos(),
+            )
+        };
+
+        // Get xyz displacements at node locations
+        let u: Matrix3xX<f64> = Matrix3xX::from_iterator(
+            num_nodes,
+            s.iter().flat_map(|&si| vec![ux(si), uy(si), uz(si)]),
+        );
+
+        assert_relative_eq!(
+            u,
+            Matrix3xX::from_vec(vec![
+                0., 0., 0., // column 1
+                0., 0., 0., // column 2
+                0., 0., 0., // column 3
+                0., 0., 0., // column 4
+                0., 0.001, 0., // column 5
+            ]),
+        );
+
+        // Get matrix describing the nodal rotation
+        let r: Matrix4xX<f64> = Matrix4xX::from_columns(
+            &s.iter()
+                .map(|&si| UnitQuaternion::from_matrix(&rot(si)).to_vector())
+                .collect_vec(),
+        );
+
+        // Quadrature rule
+        let gq = Quadrature::gauss(7);
+
+        // Create material
+        let mat = Material {
+            eta: Vector3::zeros(),
+            mass: Matrix6::identity(),
+            stiffness: Matrix6::from_row_slice(&vec![
+                1.36817e6, 0., 0., 0., 0., 0., // row 1
+                0., 88560., 0., 0., 0., 0., // row 2
+                0., 0., 38780., 0., 0., 0., // row 3
+                0., 0., 0., 16960., 17610., -351., // row 4
+                0., 0., 0., 17610., 59120., -370., // row 5
+                0., 0., 0., -351., -370., 141470., // row 6
+            ]),
+        };
+
+        // Create sections
+        let sections: Vec<Section> = vec![Section::new(0.0, &mat), Section::new(1.0, &mat)];
+
+        // Create element from nodes
+        let mut elem = nodes.element(&gq, &sections);
+
+        // Get the deformed element
+        elem.displace(&u, &r);
+
+        // Get constraints_gradient_matrix
+        let B: Matrix6xX<f64> = elem.constraints_gradient_matrix();
+        assert_relative_eq!(B.columns(0, 6), Matrix6::identity().columns(0, 6));
+
+        // Get residual vector
+        let R: DVector<f64> = elem.residual_vector();
+        assert_relative_eq!(
+            R,
+            DVector::from_vec(vec![
+                0., 0.8856, 0., 0., 0., 4.428, 0., -3.01898, 0., 0., 0., -12.4884, 0., 9.4464, 0.,
+                0., 0., 23.616, 0., -69.305, 0., 0., 0., -59.8356, 0., 61.992, 0., 0., 0., -44.28
+            ]),
+            epsilon = 1e-4
+        );
+
+        // Get constraint_residual_vector
+        let Phi: Vector6<f64> = elem.constraint_residual_vector();
+        assert_relative_eq!(Phi, Vector6::zeros());
+
+        // Static iteration matrix
+        let K_FE: DMatrix<f64> = elem.stiffness_matrix();
+        assert_relative_eq!(K_FE[(0, 0)], 957719.0, epsilon = 1e-5);
+        assert_relative_eq!(K_FE[(1, 1)], 61992.0, epsilon = 1e-5);
+    }
 }
 
 #[derive(Clone)]
@@ -579,6 +832,10 @@ pub struct Material {
 //------------------------------------------------------------------------------
 // Utility functions
 //------------------------------------------------------------------------------
+
+fn interp_force(shape_func_interp: &DMatrix<f64>, node_force: &Matrix6xX<f64>) -> Matrix6xX<f64> {
+    node_force * shape_func_interp
+}
 
 fn interp_position(
     shape_func_interp: &DMatrix<f64>,
@@ -620,49 +877,4 @@ fn interp_rotation_derivative(
         r.component_div_assign(jacobian);
     }
     r_prime
-}
-
-//------------------------------------------------------------------------------
-// Traits
-//------------------------------------------------------------------------------
-
-pub trait VecToQuatExt {
-    fn as_quaternion(&self) -> Quaternion<f64>;
-    fn as_unit_quaternion(&self) -> UnitQuaternion<f64>;
-}
-
-impl VecToQuatExt for Vector4<f64> {
-    fn as_quaternion(&self) -> Quaternion<f64> {
-        Quaternion::new(self[0], self[1], self[2], self[3])
-    }
-    fn as_unit_quaternion(&self) -> UnitQuaternion<f64> {
-        UnitQuaternion::from_quaternion(self.as_quaternion())
-    }
-}
-
-pub trait SkewSymmExt {
-    fn skew_symmetric_matrix(&self) -> Matrix3<f64>;
-}
-
-impl SkewSymmExt for Vector3<f64> {
-    fn skew_symmetric_matrix(&self) -> Matrix3<f64> {
-        Matrix3::new(
-            0.0, -self[2], self[1], self[2], 0.0, -self[0], -self[1], self[0], 0.0,
-        )
-    }
-}
-
-pub trait QuatExt {
-    fn F(&self) -> Matrix3x4<f64>;
-    fn to_vector(&self) -> Vector4<f64>;
-}
-
-impl QuatExt for UnitQuaternion<f64> {
-    fn F(&self) -> Matrix3x4<f64> {
-        let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
-        Matrix3x4::new(-q1, q0, -q3, q2, -q2, q3, q0, -q1, -q3, -q2, q1, q0)
-    }
-    fn to_vector(&self) -> Vector4<f64> {
-        Vector4::new(self.w, self.i, self.j, self.k)
-    }
 }
