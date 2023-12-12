@@ -32,16 +32,20 @@ pub struct Element {
 }
 
 impl Element {
-    pub fn displace(&mut self, node_u: &Matrix3xX<f64>, node_r: &Matrix4xX<f64>) {
+    pub fn set_displacement(&mut self, node_u: &Matrix3xX<f64>, node_r: &Matrix4xX<f64>) {
+        // Save node displacement and rotation
+        self.nodes.u = node_u.clone();
+        self.nodes.r = node_r.clone();
+
         // Interpolate displacement and displacement derivative to quadrature points
-        let u: Matrix3xX<f64> = interp_position(&self.shape_func_interp, &node_u);
+        let u: Matrix3xX<f64> = interp_position(&self.shape_func_interp, &self.nodes.u);
         let u_prime: Matrix3xX<f64> =
-            interp_position_derivative(&self.shape_func_deriv, &self.jacobian, &node_u);
+            interp_position_derivative(&self.shape_func_deriv, &self.jacobian, &self.nodes.u);
 
         // Interpolate rotation and rotation derivative to quadrature points
-        let r: Matrix4xX<f64> = interp_rotation(&self.shape_func_interp, &node_r);
+        let r: Matrix4xX<f64> = interp_rotation(&self.shape_func_interp, &self.nodes.r);
         let r_prime: Matrix4xX<f64> =
-            interp_rotation_derivative(&self.shape_func_deriv, &self.jacobian, &node_r);
+            interp_rotation_derivative(&self.shape_func_deriv, &self.jacobian, &self.nodes.r);
 
         // Calculate quadrature point values with applied displacement/rotation
         for (i, qp) in self.qps.iter_mut().enumerate() {
@@ -57,10 +61,7 @@ impl Element {
     }
 
     pub fn apply_force(&mut self, forces: &Matrix6xX<f64>) {
-        let Fext: Matrix6xX<f64> = interp_force(&self.shape_func_interp, forces);
-        for (qp, Fext) in self.qps.iter_mut().zip(Fext.column_iter()) {
-            qp.Fext.copy_from(&Fext);
-        }
+        self.nodes.F.copy_from(forces);
     }
 
     pub fn stiffness_matrix(&self) -> DMatrix<f64> {
@@ -107,7 +108,7 @@ impl Element {
                 );
             }
         }
-        DVector::from_column_slice(Residual.as_slice())
+        DVector::from_column_slice((&Residual - &self.nodes.F).as_slice())
     }
 
     pub fn constraint_residual_vector(&self) -> Vector6<f64> {
@@ -143,6 +144,7 @@ pub struct Nodes {
     pub r0: Matrix4xX<f64>,
     pub u: Matrix3xX<f64>,
     pub r: Matrix4xX<f64>,
+    pub F: Matrix6xX<f64>,
 }
 
 impl Nodes {
@@ -161,6 +163,7 @@ impl Nodes {
             r0: r0.clone(),
             u: Matrix3xX::zeros(num_nodes),
             r: Matrix4xX::zeros(num_nodes),
+            F: Matrix6xX::zeros(num_nodes),
         }
     }
     pub fn element(&self, quadrature: &Quadrature, sections: &[Section]) -> Element {
@@ -539,7 +542,7 @@ mod tests {
         );
 
         // Displace the element
-        elem.displace(&u, &r);
+        elem.set_displacement(&u, &r);
 
         assert_relative_eq!(
             elem.qps[0].u,
@@ -634,9 +637,9 @@ mod tests {
         //----------------------------------------------------------------------
 
         let fx = |s: f64| -> f64 { 10. * s + 1. };
-        let fz = |s: f64| -> f64 { 0. };
-        let fy = |s: f64| -> f64 { 0. };
-        let ft = |s: f64| -> f64 { 0. };
+        let fz = |s: f64| -> f64 { 0. * s };
+        let fy = |s: f64| -> f64 { 0. * s };
+        let ft = |s: f64| -> f64 { 0. * s };
         let xi: DVector<f64> = DVector::from_vec(gauss_legendre_lobotto_points(4));
         let s: DVector<f64> = xi.add_scalar(1.) / 2.;
 
@@ -779,7 +782,7 @@ mod tests {
         let mut elem = nodes.element(&gq, &sections);
 
         // Get the deformed element
-        elem.displace(&u, &r);
+        elem.set_displacement(&u, &r);
 
         // Get constraints_gradient_matrix
         let B: Matrix6xX<f64> = elem.constraints_gradient_matrix();
