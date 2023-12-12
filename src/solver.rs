@@ -2,15 +2,9 @@
 
 use std::ops::AddAssign;
 
-use crate::element::{
-    gebt::{Element, Nodes, QuatExt, SkewSymmExt, VecToQuatExt},
-    interp::{
-        gauss_legendre_lobotto_points, lagrange_polynomial_derivative,
-        quaternion_from_tangent_twist,
-    },
-};
+use crate::element::gebt::{Element, SkewSymmExt, VecToQuatExt};
 use nalgebra::{
-    DMatrix, DVector, Dyn, Matrix3, Matrix3xX, Matrix4xX, Matrix6xX, OMatrix, Quaternion,
+    DMatrix, DVector, Dyn, Matrix3, Matrix3xX, Matrix4xX, Matrix6xX, OMatrix, Rotation3,
     UnitQuaternion, Vector3, Vector4, Vector6, U7,
 };
 
@@ -40,29 +34,53 @@ impl State {
         let mut un: Matrix3xX<f64> = Matrix3xX::zeros(self.q.ncols());
         let mut rn: Matrix4xX<f64> = Matrix4xX::zeros(self.q.ncols());
 
-        // Update displacements
+        // Get change in delta multiplied by time step
+        let qd: Matrix6xX<f64> = &self.q_delta * h;
+
+        // Calculate new displacements
         let u = self.q.fixed_rows::<3>(0);
-        let du = self.q_delta.fixed_rows::<3>(0);
-        un.copy_from(&(&du * h + &u));
+        let du = qd.fixed_rows::<3>(0);
+        un.copy_from(&(&u + &du));
 
-        // Update rotations
+        // Calculate new rotations
         let r = self.q.fixed_rows::<4>(3);
-        let dr = self.q_delta.fixed_rows::<3>(3);
+        let dr = qd.fixed_rows::<3>(3);
         for i in 0..r.ncols() {
-            // Get current rotation as a quaternion
-            let R = Vector4::from(r.column(i)).as_unit_quaternion();
-
-            // Get change in rotation as quaternion
-            let dR = UnitQuaternion::from_scaled_axis(h * dr.column(i));
-
-            // Compose rotation with delta rotation to get new rotation
-            let Rn = R * dR;
-
-            // Update rotation vector
+            let R1: UnitQuaternion<f64> = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
+            let R2: UnitQuaternion<f64> = UnitQuaternion::from_scaled_axis(dr.column(i)); // change in rotation
+            let Rn: UnitQuaternion<f64> = R1 * R2; // new rotation
             rn.column_mut(i)
                 .copy_from(&Vector4::new(Rn.w, Rn.i, Rn.j, Rn.k));
         }
         (un, rn)
+    }
+    fn tangent_operator(&self, h: f64) -> DMatrix<f64> {
+        let mut T: DMatrix<f64> = DMatrix::zeros(self.q_delta.len(), self.q_delta.len());
+
+        // Get change in delta multiplied by time step
+        let qd: Matrix6xX<f64> = &self.q_delta * h;
+
+        // Loop through nodes
+        for i in 0..self.q_delta.ncols() {
+            // Translation
+            let T_R3: Matrix3<f64> = Matrix3::identity();
+            T.fixed_view_mut::<3, 3>(i * 6, i * 6).copy_from(&T_R3);
+
+            // Rotation
+            let psi: Vector3<f64> = Vector3::from(qd.fixed_view::<3, 1>(3, i));
+            let phi = psi.magnitude();
+            let psi_t: Matrix3<f64> = psi.skew_symmetric_matrix();
+            let T_SO3: Matrix3<f64> = if phi == 0. {
+                Matrix3::identity()
+            } else {
+                Matrix3::identity()
+                    + (1. - phi.cos()) / phi.powi(2) * psi_t
+                    + (1. - phi.sin() / phi) / phi.powi(2) * (psi_t * psi_t)
+            };
+            T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
+                .copy_from(&T_SO3);
+        }
+        T
     }
 }
 
@@ -144,33 +162,6 @@ impl GeneralizedAlphaSolver {
         state_next
     }
 
-    fn tangent_operator(&self) -> DMatrix<f64> {
-        let mut T: DMatrix<f64> =
-            DMatrix::zeros(self.num_state_nodes * 6, self.num_state_nodes * 6);
-        for i in 0..self.num_state_nodes {
-            // Translation
-            T.fixed_view_mut::<3, 3>(i * 6, i * 6)
-                .copy_from(&Matrix3::identity());
-
-            // Rotation
-            // let rot_vec: Vector3<f64> =
-            //     Vector3::from(self.h * self.q_delta.fixed_view::<3, 1>(3, i));
-            // let phi = rot_vec.magnitude();
-            // let psi_t: Matrix3<f64> = rot_vec.skew_symmetric_matrix();
-            // let T_SO3: Matrix3<f64> = if phi != 0. {
-            //     Matrix3::identity()
-            //         + (phi.cos() - 1.) / phi.powi(2) * psi_t
-            //         + (1. - phi.sin() / phi) / phi.powi(2) * (psi_t * psi_t)
-            // } else {
-            //     Matrix3::identity()
-            // };
-            // T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
-            //     .copy_from(&T_SO3);
-            T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
-                .copy_from(&Matrix3::identity());
-        }
-        T
-    }
     pub fn solve_time_step(&mut self, elem: &mut Element) -> Option<usize> {
         // Number of degrees of freedom
         let num_node_dofs = self.num_state_nodes * 6;
@@ -224,7 +215,7 @@ impl GeneralizedAlphaSolver {
             let K_C: DMatrix<f64> = DMatrix::zeros(K_FE.nrows(), K_FE.ncols());
 
             // Tangent operator
-            let T: DMatrix<f64> = self.tangent_operator();
+            let T: DMatrix<f64> = state_next.tangent_operator(self.h);
 
             // Assemble iteration matrix
             self.St.fill(0.);
