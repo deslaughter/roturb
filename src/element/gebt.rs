@@ -373,13 +373,16 @@ pub struct QuadraturePoint {
     /// translational displacement derivative
     u_prime: Vector3,
     /// translational velocity
-    udot: Vector3,
+    u_dot: Vector3,
+    /// translational acceleration
+    u_ddot: Vector3,
     /// angular displacement
     R: UnitQuaternion,
     /// angular displacement derivative
     R_prime: Quaternion,
     /// angular velocity
     omega: Vector3,
+    omega_dot: Vector3,
     RR0: Rotation3,
     /// Strain vector
     strain: Vector6,
@@ -420,8 +423,12 @@ impl QuadraturePoint {
         // Update displacement inputs
         self.u = *u;
         self.u_prime = *u_prime;
+        self.u_dot = *u_dot;
+        self.u_ddot = *u_ddot;
         self.R = *R;
         self.R_prime = *R_prime;
+        self.omega = *omega;
+        self.omega_dot = *omega_dot;
 
         // Calculate 6x6 rotation matrix
         self.RR0 = (R * self.R0).to_rotation_matrix();

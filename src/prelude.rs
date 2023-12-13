@@ -73,15 +73,26 @@ impl VecToQuatExt for Vector4 {
     }
 }
 
-pub trait TildeExt {
+pub trait RotVecExt {
+    fn tangent_matrix(&self) -> Matrix3;
     fn tilde(&self) -> Matrix3;
 }
 
-impl TildeExt for Vector3 {
+impl RotVecExt for Vector3 {
     fn tilde(&self) -> Matrix3 {
         Matrix3::new(
             0.0, -self[2], self[1], self[2], 0.0, -self[0], -self[1], self[0], 0.0,
         )
+    }
+    fn tangent_matrix(&self) -> Matrix3 {
+        let phi = self.magnitude();
+        if phi == 0. {
+            Matrix3::identity()
+        } else {
+            Matrix3::identity()
+                + (1. - phi.cos()) / phi.powi(2) * self.tilde()
+                + (1. - phi.sin() / phi) / phi.powi(2) * (self.tilde() * self.tilde())
+        }
     }
 }
 

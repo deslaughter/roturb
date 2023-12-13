@@ -69,15 +69,7 @@ impl State {
             T.fixed_view_mut::<3, 3>(i * 6, i * 6).copy_from(&T_R3);
 
             // Rotation
-            let psi: Vector3 = Vector3::from(qd.fixed_view::<3, 1>(3, i));
-            let phi = psi.magnitude();
-            let T_SO3: Matrix3 = if phi == 0. {
-                Matrix3::identity()
-            } else {
-                Matrix3::identity()
-                    + (1. - phi.cos()) / phi.powi(2) * psi.tilde()
-                    + (1. - phi.sin() / phi) / phi.powi(2) * (psi.tilde() * psi.tilde())
-            };
+            let T_SO3: Matrix3 = Vector3::from(qd.fixed_view::<3, 1>(3, i)).tangent_matrix();
             T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
                 .copy_from(&T_SO3);
         }
@@ -99,6 +91,10 @@ pub struct GeneralizedAlphaSolver {
     St: MatrixD, // iteration matrix
     R: VectorD,  // residual vector
     gravity: Vector3,
+    DL_diag: VectorD, // left conditioning vector
+    DR_diag: VectorD, // right conditioning vector
+    DL: MatrixD,      // left conditioning matrix
+    DR: MatrixD,      // right conditioning matrix
 }
 
 impl GeneralizedAlphaSolver {
@@ -118,8 +114,20 @@ impl GeneralizedAlphaSolver {
         let beta_prime: f64 = (1. - alpha_m) / (h * h * beta * (1. - alpha_f));
         let gamma_prime: f64 = gamma / (h * beta);
 
+        let num_state_dofs = num_state_nodes * 6;
+        let num_constraint_dofs = num_constraint_nodes * 6;
         // Number of DOFs in full system with constraints
-        let ndofs = (num_state_nodes + num_constraint_nodes) * 6;
+        let ndofs = num_state_dofs + num_constraint_dofs;
+
+        // Solution conditioning
+        let mut DL_diag: VectorD = VectorD::zeros(ndofs).add_scalar(1.);
+        DL_diag.rows_mut(0, num_state_dofs).fill(beta * h * h);
+        let DL: MatrixD = MatrixD::from_diagonal(&DL_diag);
+        let mut DR_diag: VectorD = VectorD::zeros(ndofs).add_scalar(1.);
+        DR_diag
+            .rows_mut(num_state_dofs, num_constraint_dofs)
+            .fill(1. / (beta * h * h));
+        let DR: MatrixD = MatrixD::from_diagonal(&DR_diag);
 
         // Generalized Alpha structure
         GeneralizedAlphaSolver {
@@ -136,6 +144,10 @@ impl GeneralizedAlphaSolver {
             St: MatrixN::zeros(ndofs, ndofs),
             R: VectorN::zeros(ndofs),
             gravity,
+            DL_diag,
+            DR_diag,
+            DL,
+            DR,
         }
     }
 
@@ -245,13 +257,20 @@ impl GeneralizedAlphaSolver {
                 .view_mut((0, num_node_dofs), (num_node_dofs, num_constraint_dofs))
                 .add_assign(&B.transpose());
 
+            // Condition the iteration matrix
+            self.St = &self.DL * &self.St * &self.DR;
+            self.R.component_mul_assign(&self.DL_diag);
+
             // Solve system
-            let x: VectorD = self
+            let mut x: VectorD = self
                 .St
                 .clone()
                 .lu()
                 .solve(&self.R)
                 .expect("Matrix is not invertable");
+
+            // Un-condition the solution vector
+            x.component_mul_assign(&self.DR_diag);
 
             // Extract delta x and delta lambda from system solution
             let x_delta: Matrix6xX =

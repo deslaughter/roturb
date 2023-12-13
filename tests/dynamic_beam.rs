@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use approx::assert_relative_eq;
 use roturb::{
     element::{
         gebt::{Material, Nodes, Section},
@@ -148,7 +149,8 @@ fn test_cantilever_beam_with_with_sin_load() {
     // Solver parameters
     let rho_inf: f64 = 0.;
     let t0: f64 = 0.;
-    let h: f64 = 0.05;
+    let tf: f64 = 4.;
+    let h: f64 = 0.005;
 
     let xi: VectorN = VectorN::from_vec(gauss_legendre_lobotto_points(4));
     let s: VectorN = xi.add_scalar(1.) / 2.;
@@ -183,16 +185,18 @@ fn test_cantilever_beam_with_with_sin_load() {
             .as_slice(),
     );
 
+    let mass = Matrix6::from_row_slice(&vec![
+        8.538, 0.000, 0.000, 0.000, 0.000, 0.000, // Row 6
+        0.000, 8.538, 0.000, 0.000, 0.000, 0.000, // Row 5
+        0.000, 0.000, 8.538, 0.000, 0.000, 0.000, // Row 4
+        0.000, 0.000, 0.000, 1.4433, 0.000, 0.000, // Row 3
+        0.000, 0.000, 0.000, 0.000, 0.40972, 0.000, // Row 2
+        0.000, 0.000, 0.000, 0.000, 0.000, 1.0336, // Row 1
+    ]) * 1e-2;
+
     // Create material
     let mat = Material {
-        mass: Matrix6::from_row_slice(&vec![
-            8.538, 0.000, 0.000, 0.000, 0.000, 0.000, // Row 6
-            0.000, 8.538, 0.000, 0.000, 0.000, 0.000, // Row 5
-            0.000, 0.000, 8.538, 0.000, 0.000, 0.000, // Row 4
-            0.000, 0.000, 0.000, 1.4433, 0.000, 0.000, // Row 3
-            0.000, 0.000, 0.000, 0.000, 0.40972, 0.000, // Row 2
-            0.000, 0.000, 0.000, 0.000, 0.000, 1.0336, // Row 1
-        ]) * 1e-2,
+        mass: mass,
         // mass: Matrix6::zeros(),
         stiffness: Matrix6::from_row_slice(&vec![
             1368.17, 0., 0., 0., 0., 0., // Row 1
@@ -251,7 +255,7 @@ fn test_cantilever_beam_with_with_sin_load() {
     // Sinusoidal force at tip in z direction
     let point_force = |t: f64| -> f64 { 1.0e2 * (10.0 * t).sin() };
 
-    while solver.state.t <= 4.0 {
+    while solver.state.t <= tf {
         // Apply sinusoidal force at tip in Z direction
         let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
         forces[(2, num_nodes - 1)] = point_force(solver.state.t + h);
@@ -260,11 +264,14 @@ fn test_cantilever_beam_with_with_sin_load() {
         // Solve time step
         match solver.solve_time_step(&mut elem) {
             None => {
-                print!("{:?}s: failed to converge \n", solver.state.t + solver.h);
+                print!("{:.3}s: failed to converge \n", solver.state.t + solver.h);
                 break;
             }
             Some(niter) => {
-                print!("{:?}s: converged in {} iterations\n", solver.state.t, niter);
+                print!(
+                    "{:.3}s: converged in {} iterations\n",
+                    solver.state.t, niter
+                );
                 states.push(solver.state.clone());
             }
         }
@@ -279,4 +286,7 @@ fn test_cantilever_beam_with_with_sin_load() {
         }
         file.write_all(b"\n").expect("fail");
     }
+
+    // Assert that solver finished simulation
+    assert_relative_eq!(solver.state.t, tf, epsilon = 1e-8);
 }
