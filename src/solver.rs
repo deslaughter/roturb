@@ -87,7 +87,7 @@ impl State {
 
 pub struct GeneralizedAlphaSolver {
     pub state: State,
-    h: f64, // time step (sec)
+    pub h: f64, // time step (sec)
     alpha_m: f64,
     alpha_f: f64,
     gamma: f64,
@@ -192,6 +192,9 @@ impl GeneralizedAlphaSolver {
             // Get element residual vector
             let R_FE: VectorD = elem.R_FE();
 
+            // Get node forces
+            let F_n: VectorD = VectorD::from_column_slice(elem.nodes.F.as_slice());
+
             // Get constraints residual vector
             let F_C: VectorD = B.transpose() * &lambda;
 
@@ -202,7 +205,7 @@ impl GeneralizedAlphaSolver {
             self.R.fill(0.);
             self.R
                 .rows_mut(0, num_node_dofs)
-                .add_assign(&(&R_FE + &F_C));
+                .add_assign(&(&R_FE + &F_C - F_n));
             self.R
                 .rows_mut(num_node_dofs, num_constraint_dofs)
                 .add_assign(&Phi);

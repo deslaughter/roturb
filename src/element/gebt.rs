@@ -84,22 +84,17 @@ impl Element {
             for j in 0..self.nodes.num {
                 let mut Kij = K_E.fixed_view_mut::<6, 6>(i * 6, j * 6);
                 for (sl, qp) in self.qps.iter().enumerate() {
+                    let phi_i = self.shape_func_interp[(i, sl)];
+                    let phi_j = self.shape_func_interp[(j, sl)];
+                    let phi_prime_i = self.shape_func_deriv[(i, sl)];
+                    let phi_prime_j = self.shape_func_deriv[(j, sl)];
+                    let J = self.jacobian[sl];
                     Kij.add_assign(
                         qp.weight
-                            * (self.shape_func_interp[(i, sl)]
-                                * qp.Puu
-                                * self.shape_func_deriv[(j, sl)]
-                                + self.shape_func_interp[(i, sl)]
-                                    * qp.Quu
-                                    * self.shape_func_interp[(j, sl)]
-                                    * self.jacobian[sl]
-                                + self.shape_func_deriv[(i, sl)]
-                                    * qp.Cuu
-                                    * self.shape_func_deriv[(j, sl)]
-                                    / self.jacobian[sl]
-                                + self.shape_func_deriv[(i, sl)]
-                                    * qp.Ouu
-                                    * self.shape_func_interp[(j, sl)]),
+                            * (phi_i * qp.Puu * phi_prime_j
+                                + phi_i * qp.Quu * phi_j * J
+                                + phi_prime_i * qp.Cuu * phi_prime_j / J
+                                + phi_prime_i * qp.Ouu * phi_j),
                     );
                 }
             }
@@ -174,7 +169,6 @@ impl Element {
     /// External nodal force vector
     pub fn F_ext(&self) -> VectorD {
         self.integrate_vectors(self.qps.iter().map(|qp| qp.F_ext).collect_vec().as_slice())
-            + VectorD::from_column_slice(self.nodes.F.as_slice())
     }
 
     fn integrate_vectors(&self, vecs: &[Vector6]) -> VectorD {
