@@ -1,3 +1,4 @@
+use approx::assert_relative_eq;
 use roturb::{
     element::{
         gebt::{Material, Nodes, Section},
@@ -174,4 +175,18 @@ fn test_static_element() {
     let num_conv_iter = solver
         .solve_time_step(&mut elem)
         .expect("solution failed to converge");
+
+    // Verify number of convergence iterations
+    assert_eq!(num_conv_iter, 7);
+
+    // Verify end node displacement in xyz
+    assert_relative_eq!(
+        Vector3::from(solver.state.q.fixed_view::<3, 1>(0, num_nodes - 1)),
+        Vector3::new(
+            -0.09020517194956187,
+            -0.06451290662897675,
+            -1.2287954559156433
+        ),
+        epsilon = 1e-6
+    )
 }
