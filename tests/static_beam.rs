@@ -9,14 +9,14 @@ use roturb::{
         quadrature::Quadrature,
     },
     prelude::*,
-    solver::GeneralizedAlphaSolver,
+    solver::{GeneralizedAlphaSolver, StepConfig},
 };
 
 #[test]
 fn test_static_element() {
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Initial configuration
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     let xi: VectorN = VectorN::from_vec(gauss_legendre_lobotto_points(4));
     let s: VectorN = xi.add_scalar(1.) / 2.;
@@ -53,9 +53,9 @@ fn test_static_element() {
             .as_slice(),
     );
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Displacements and rotations from reference
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     let scale = 0.0;
     let ux = |t: f64| -> f64 { scale * t * t };
@@ -94,14 +94,14 @@ fn test_static_element() {
             .collect_vec(),
     );
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Material
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     // Create material
     let mat = Material {
-        mass: Matrix6::zeros(),
-        stiffness: Matrix6::from_row_slice(&vec![
+        M_star: Matrix6::zeros(),
+        C_star: Matrix6::from_row_slice(&vec![
             1.36817e6, 0., 0., 0., 0., 0., // row 1
             0., 88560., 0., 0., 0., 0., // row 2
             0., 0., 38780., 0., 0., 0., // row 3
@@ -114,9 +114,9 @@ fn test_static_element() {
     // Create sections
     let sections: Vec<Section> = vec![Section::new(0.0, &mat), Section::new(1.0, &mat)];
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Create element
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     // Create nodes structure
     let nodes = Nodes::new(&s, &xi, &x0, &r0);
@@ -127,65 +127,68 @@ fn test_static_element() {
     // Create element from nodes
     let mut elem = nodes.element(&gq, &sections);
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
+    // Step configuration
+    //--------------------------------------------------------------------------
+
+    let step_config = StepConfig::new(1.0, 1.0);
+
+    //--------------------------------------------------------------------------
     // Test solve of element with no initial displacement
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     // Create generalized alpha solver
     let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, 1.0, 0.0, 1.0, Vector3::zeros());
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
 
     // Solve time step
-    let num_conv_iter = solver
-        .solve_time_step(&mut elem)
-        .expect("solution failed to converge");
-    assert_eq!(num_conv_iter, 0);
+    let errors = solver.step(&mut elem).expect("solution failed to converge");
+    assert_eq!(errors.len(), 1);
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     // Create generalized alpha solver
     let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, 1.0, 0.0, 1.0, Vector3::zeros());
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
 
     // Populate initial state
-    solver.state.q.fixed_rows_mut::<3>(0).copy_from(&u);
-    solver.state.q.fixed_rows_mut::<4>(3).copy_from(&r);
+    let mut Q = Matrix7xX::zeros(u.ncols());
+    Q.fixed_rows_mut::<3>(0).copy_from(&u);
+    Q.fixed_rows_mut::<4>(3).copy_from(&r);
+    solver.state.set_displacement(&Q);
 
     // Solve time step
-    let num_conv_iter = solver
-        .solve_time_step(&mut elem)
-        .expect("solution failed to converge");
-    assert_eq!(num_conv_iter, 1);
+    let errors = solver.step(&mut elem).expect("solution failed to converge");
+    assert_eq!(errors.len(), 2);
 
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // Test solve of element with applied load
-    //----------------------------------------------------------------------
+    //--------------------------------------------------------------------------
 
     // Create generalized alpha solver
     let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, 1.0, 0.0, 1.0, Vector3::zeros());
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
 
     // Create force matrix, apply 150 lbs force in z direction of last node
     let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
     forces[(2, num_nodes - 1)] = 150.;
     elem.apply_force(&forces);
 
-    let num_conv_iter = solver
-        .solve_time_step(&mut elem)
-        .expect("solution failed to converge");
+    let errors = solver.step(&mut elem).expect("solution failed to converge");
 
     // Verify number of convergence iterations
-    assert_eq!(num_conv_iter, 7);
+    assert_eq!(errors.len(), 4);
 
     // Verify end node displacement in xyz
+    let q = solver.state.displacement(&solver.step_config);
     assert_relative_eq!(
-        Vector3::from(solver.state.q.fixed_view::<3, 1>(0, num_nodes - 1)),
+        Vector3::from(q.fixed_view::<3, 1>(0, num_nodes - 1)),
         Vector3::new(
-            -0.09020517194956187,
-            -0.06451290662897675,
-            -1.2287954559156433
+            -0.09007939365535306,
+            -0.06458366400269204,
+            1.2281361243687572
         ),
         epsilon = 1e-6
     )

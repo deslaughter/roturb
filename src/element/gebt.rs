@@ -169,18 +169,19 @@ impl Element {
     /// External nodal force vector
     pub fn F_ext(&self) -> VectorD {
         self.integrate_vectors(self.qps.iter().map(|qp| qp.F_ext).collect_vec().as_slice())
+            + VectorD::from_column_slice(self.nodes.F.as_slice())
     }
 
     fn integrate_vectors(&self, vecs: &[Vector6]) -> VectorD {
-        let mut M: Matrix6xX = Matrix6xX::zeros(self.nodes.num);
-        for (i, mut col) in M.column_iter_mut().enumerate() {
+        let mut V: Matrix6xX = Matrix6xX::zeros(self.nodes.num);
+        for (i, mut col) in V.column_iter_mut().enumerate() {
             for (sl, qp) in self.qps.iter().enumerate() {
                 col.add_assign(
-                    self.shape_func_deriv[(i, sl)] * vecs[i] * self.jacobian[sl] * qp.weight,
+                    self.shape_func_interp[(i, sl)] * vecs[sl] * self.jacobian[sl] * qp.weight,
                 );
             }
         }
-        VectorD::from_column_slice(M.as_slice())
+        VectorD::from_column_slice(V.as_slice())
     }
 
     pub fn constraint_residual_vector(&self) -> Vector6 {
@@ -278,7 +279,7 @@ impl Nodes {
                 sections
                     .iter()
                     .zip(weights.iter())
-                    .map(|(section, &w)| section.material.mass * w)
+                    .map(|(section, &w)| section.material.M_star * w)
                     .sum()
             })
             .collect();
@@ -291,7 +292,7 @@ impl Nodes {
                 sections
                     .iter()
                     .zip(weights.iter())
-                    .map(|(section, &w)| section.material.stiffness * w)
+                    .map(|(section, &w)| section.material.C_star * w)
                     .sum()
             })
             .collect();
@@ -521,7 +522,7 @@ impl QuadraturePoint {
         self.Guu.fill(0.);
         self.Guu.fixed_view_mut::<3, 3>(0, 3).copy_from(
             &((omega.tilde() * m * eta).tilde().transpose()
-                + m * omega.tilde() * eta.tilde().transpose()),
+                + omega.tilde() * m * eta.tilde().transpose()),
         );
         self.Guu
             .fixed_view_mut::<3, 3>(3, 3)
@@ -530,13 +531,33 @@ impl QuadraturePoint {
         // Inertia stiffness matrix
         self.Kuu.fill(0.);
         self.Kuu.fixed_view_mut::<3, 3>(0, 3).copy_from(
-            &(m * (omega_dot.tilde() + omega.tilde() * omega.tilde()) * eta.tilde().transpose()),
+            &((omega_dot.tilde() + omega.tilde() * omega.tilde()) * m * eta.tilde().transpose()),
         );
         self.Kuu.fixed_view_mut::<3, 3>(3, 3).copy_from(
-            &(m * u_ddot.tilde() * eta.tilde()
+            &(u_ddot.tilde() * m * eta.tilde()
                 + (rho * omega_dot.tilde() - (rho * omega_dot).tilde())
                 + omega.tilde() * (rho * omega.tilde() - (rho * omega).tilde())),
         );
+
+        // let alpha: Vector3 = (omega_dot.tilde() + omega.tilde() * omega.tilde()) * m * eta;
+        // let beta: Vector3 = omega.tilde() * m * eta;
+        // let gamma: Vector3 = rho * omega_dot + omega.tilde() * rho * omega;
+        // let eps: Matrix3 =
+        //     omega.tilde() * rho + (omega.tilde() * rho).transpose() - (rho * omega).tilde();
+
+        // let mut Guu: Matrix6 = Matrix6::zeros();
+        // Guu.fixed_view_mut::<3, 3>(0, 3)
+        //     .copy_from(&(2. * m * eta.tilde().transpose() - 2. * beta.tilde()));
+        // Guu.fixed_view_mut::<3, 3>(3, 3)
+        //     .copy_from(&(2. * rho + eps));
+        // self.Guu.copy_from(&Guu);
+
+        // let mut Kuu: Matrix6 = Matrix6::zeros();
+        // Kuu.fixed_view_mut::<3, 3>(0, 3)
+        //     .copy_from(&(m * eta.tilde().transpose() - 2. * beta.tilde() - alpha.tilde()));
+        // Kuu.fixed_view_mut::<3, 3>(3, 3)
+        //     .copy_from(&(rho + eps + (u_ddot.tilde() * m * eta.tilde() - gamma.tilde())));
+        // self.Kuu.copy_from(&Kuu);
     }
 }
 
@@ -554,7 +575,7 @@ mod tests {
     use crate::element::interp::{gauss_legendre_lobotto_points, quaternion_from_tangent_twist};
 
     #[test]
-    pub fn test_beam3() {
+    pub fn test_beam_formulation() {
         let fz = |t: f64| -> f64 { t - 2. * t * t };
         let fy = |t: f64| -> f64 { -2. * t + 3. * t * t };
         let fx = |t: f64| -> f64 { 5. * t };
@@ -577,6 +598,22 @@ mod tests {
                 (scale * t).cos(),
             )
         };
+
+        // Velocities
+        let vx = |s: f64| -> f64 { scale * (s) };
+        let vy = |s: f64| -> f64 { scale * (s * s - s) };
+        let vz = |s: f64| -> f64 { scale * (s * s + 0.2 * s * s * s) };
+        let omega_x = |s: f64| -> f64 { scale * (s) };
+        let omega_y = |s: f64| -> f64 { scale * (s * s - s) };
+        let omega_z = |s: f64| -> f64 { scale * (s * s + 0.2 * s * s * s) };
+
+        // Displacements
+        let ax = |s: f64| -> f64 { scale * (s) };
+        let ay = |s: f64| -> f64 { scale * (2. * s * s - s) };
+        let az = |s: f64| -> f64 { scale * (2. * s * s + 0.2 * s * s * s) };
+        let omega_dot_x = |s: f64| -> f64 { scale * (s) };
+        let omega_dot_y = |s: f64| -> f64 { scale * (s * s - s) };
+        let omega_dot_z = |s: f64| -> f64 { scale * (s * s - s) };
 
         // Reference-Line Definition: Here we create a somewhat complex polynomial
         // representation of a line with twist; gives us reference length and curvature to test against
@@ -615,11 +652,48 @@ mod tests {
 
         let nodes = Nodes::new(&s, &xi, &x0, &r0);
 
+        // Construct mass matrix
+        let eta_star: Vector3 = Vector3::new(0.1, 0.2, 0.3);
+        let m = 2.0;
+        let mut mass: Matrix6 = Matrix6::zeros();
+        mass.fixed_view_mut::<3, 3>(0, 0)
+            .copy_from(&Matrix3::from_diagonal_element(m));
+        mass.fixed_view_mut::<3, 3>(0, 3)
+            .copy_from(&(m * eta_star.tilde().transpose()));
+        mass.fixed_view_mut::<3, 3>(3, 0)
+            .copy_from(&(m * eta_star.tilde()));
+        mass.fixed_view_mut::<3, 3>(3, 3)
+            .copy_from(&Matrix3::from_fn(|i, j| ((i + 1) * (j + 1)) as f64));
+
         // Create material
         let mat = Material {
-            mass: Matrix6::identity(),
-            stiffness: Matrix6::from_fn(|i, j| ((i + 1) * (j + 1)) as f64),
+            M_star: mass,
+            C_star: Matrix6::from_fn(|i, j| ((i + 1) * (j + 1)) as f64),
         };
+
+        assert_relative_eq!(
+            mat.M_star,
+            Matrix6::from_vec(vec![
+                2., 0., 0., 0., 0.6, -0.4, // column 1
+                0., 2., 0., -0.6, 0., 0.2, // column 2
+                0., 0., 2., 0.4, -0.2, 0., // column 3
+                0., -0.6, 0.4, 1., 2., 3., // column 4
+                0.6, 0., -0.2, 2., 4., 6., // column 5
+                -0.4, 0.2, 0., 3., 6., 9., // column 6
+            ])
+        );
+
+        assert_relative_eq!(
+            mat.C_star,
+            Matrix6::from_vec(vec![
+                1., 2., 3., 4., 5., 6., // column 1
+                2., 4., 6., 8., 10., 12., // column 2
+                3., 6., 9., 12., 15., 18., // column 3
+                4., 8., 12., 16., 20., 24., // column 4
+                5., 10., 15., 20., 25., 30., // column 5
+                6., 12., 18., 24., 30., 36., // column 6
+            ])
+        );
 
         // Create quadrature points and weights
         let gq = Quadrature::gauss(7);
@@ -649,8 +723,28 @@ mod tests {
         Q.fixed_rows_mut::<4>(3).copy_from(&r);
 
         // Combine translation and angular velocities
-        let V: Matrix6xX = Matrix6xX::zeros(nodes.num);
-        let A: Matrix6xX = Matrix6xX::zeros(nodes.num);
+        let mut V: Matrix6xX = Matrix6xX::zeros(nodes.num);
+        for (mut c, &s) in V.column_iter_mut().zip(s.iter()) {
+            c.copy_from(&Vector6::new(
+                vx(s),
+                vy(s),
+                vz(s),
+                omega_x(s),
+                omega_y(s),
+                omega_z(s),
+            ))
+        }
+        let mut A: Matrix6xX = Matrix6xX::zeros(nodes.num);
+        for (mut c, &s) in A.column_iter_mut().zip(s.iter()) {
+            c.copy_from(&Vector6::new(
+                ax(s),
+                ay(s),
+                az(s),
+                omega_dot_x(s),
+                omega_dot_y(s),
+                omega_dot_z(s),
+            ))
+        }
 
         // Gravity
         let g = Vector3::zeros();
@@ -699,10 +793,23 @@ mod tests {
             epsilon = 1.0e-5
         );
 
-        // Get residual vector
-        let R: VectorN = elem.R_FE();
         assert_relative_eq!(
-            R,
+            elem.qps[0].F_I,
+            Vector6::new(
+                0.00437542,
+                -0.00699735,
+                0.00168548,
+                -0.00883081,
+                -0.0137881,
+                -0.0297526,
+            ),
+            epsilon = 1.0e-5
+        );
+
+        // Get elastic force vector
+        let R_E: VectorN = elem.F_E();
+        assert_relative_eq!(
+            R_E,
             VectorN::from_vec(vec![
                 -0.11121183449279282,
                 -0.1614948289968802,
@@ -738,10 +845,49 @@ mod tests {
             epsilon = 1.0e-7
         );
 
+        // Get inertial force vector
+        let R_I: VectorN = elem.F_I();
+        assert_relative_eq!(
+            R_I,
+            VectorN::from_vec(vec![
+                0.0001160455640892761,
+                -0.0006507362696178125,
+                -0.0006134866787567512,
+                0.0006142322011934131,
+                -0.002199479688149198,
+                -0.002486843354672648,
+                0.04224129527348784,
+                -0.04970288500953023,
+                0.03088887284431367,
+                -0.06975512417597242,
+                -0.1016119340697187,
+                -0.2145759755006085,
+                0.1782195482379224,
+                -0.06852557905980959,
+                0.239183232808296,
+                -0.1174211448270913,
+                -0.2577547967767749,
+                -0.3851496964119589,
+                0.2842963634125303,
+                0.09461848004333057,
+                0.5753721231363037,
+                -0.0372222680242176,
+                -0.08186055756075448,
+                -0.02397231276703171,
+                0.07251940986370667,
+                0.04758219371046168,
+                0.1727148583550362,
+                -0.007667261048491473,
+                0.02731289347020924,
+                0.05581821163081066,
+            ]),
+            epsilon = 1.0e-7
+        );
+
         // Get stiffness matrix
-        let K: MatrixN = elem.K_E();
-        assert_relative_eq!(K[(0, 0)], 1.7424, epsilon = 1.0e-4);
-        assert_relative_eq!(K[(0, 1)], 2.5965, epsilon = 1.0e-4);
+        let K_E: MatrixN = elem.K_E();
+        assert_relative_eq!(K_E[(0, 0)], 1.7424, epsilon = 1.0e-4);
+        assert_relative_eq!(K_E[(0, 1)], 2.5965, epsilon = 1.0e-4);
     }
 
     #[test]
@@ -875,8 +1021,8 @@ mod tests {
 
         // Create material
         let mat = Material {
-            mass: Matrix6::identity(),
-            stiffness: Matrix6::from_row_slice(&vec![
+            M_star: Matrix6::identity(),
+            C_star: Matrix6::from_row_slice(&vec![
                 1.36817e6, 0., 0., 0., 0., 0., // row 1
                 0., 88560., 0., 0., 0., 0., // row 2
                 0., 0., 38780., 0., 0., 0., // row 3
@@ -901,8 +1047,8 @@ mod tests {
         Q.fixed_rows_mut::<4>(3).copy_from(&r);
 
         // Combine translation and angular velocities
-        let mut V: Matrix6xX = Matrix6xX::zeros(nodes.num);
-        let mut A: Matrix6xX = Matrix6xX::zeros(nodes.num);
+        let V: Matrix6xX = Matrix6xX::zeros(nodes.num);
+        let A: Matrix6xX = Matrix6xX::zeros(nodes.num);
 
         // Get the deformed element
         elem.update_states(&Q, &V, &A, &g);
@@ -950,8 +1096,8 @@ impl Section {
 
 #[derive(Clone)]
 pub struct Material {
-    pub mass: Matrix6,      // Mass matrix
-    pub stiffness: Matrix6, // Stiffness matrix
+    pub M_star: Matrix6, // Mass matrix
+    pub C_star: Matrix6, // Stiffness matrix
 }
 
 //------------------------------------------------------------------------------
