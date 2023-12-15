@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use approx::assert_relative_eq;
 use roturb::{
     element::{
@@ -9,7 +11,7 @@ use roturb::{
         quadrature::Quadrature,
     },
     prelude::*,
-    solver::{GeneralizedAlphaSolver, StepConfig},
+    solver::{GeneralizedAlphaSolver, State, StepConfig},
 };
 
 #[test]
@@ -137,9 +139,11 @@ fn test_static_element() {
     // Test solve of element with no initial displacement
     //--------------------------------------------------------------------------
 
+    // Create initial state
+    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
+
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
+    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
 
     // Solve time step
     let errors = solver.step(&mut elem).expect("solution failed to converge");
@@ -149,15 +153,18 @@ fn test_static_element() {
     // Test solve of element with initial displacement
     //--------------------------------------------------------------------------
 
-    // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
-
     // Populate initial state
-    let mut Q = Matrix7xX::zeros(u.ncols());
+    let mut Q: Matrix7xX = Matrix7xX::zeros(u.ncols());
     Q.fixed_rows_mut::<3>(0).copy_from(&u);
     Q.fixed_rows_mut::<4>(3).copy_from(&r);
-    solver.state.set_displacement(&Q);
+    let V: Matrix6xX = Matrix6xX::zeros(u.ncols());
+    let A: Matrix6xX = Matrix6xX::zeros(u.ncols());
+
+    // Create initial state
+    let state0: State = State::new_with_initial_state(&step_config, elem.nodes.num, 0., &Q, &V, &A);
+
+    // Create generalized alpha solver
+    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
 
     // Solve time step
     let errors = solver.step(&mut elem).expect("solution failed to converge");
@@ -167,9 +174,11 @@ fn test_static_element() {
     // Test solve of element with applied load
     //--------------------------------------------------------------------------
 
+    // Create initial state
+    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
+
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &step_config, 0.0, Vector3::zeros());
+    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
 
     // Create force matrix, apply 150 lbs force in z direction of last node
     let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
@@ -179,16 +188,16 @@ fn test_static_element() {
     let errors = solver.step(&mut elem).expect("solution failed to converge");
 
     // Verify number of convergence iterations
-    assert_eq!(errors.len(), 4);
+    assert_eq!(errors.len(), 5);
 
     // Verify end node displacement in xyz
-    let q = solver.state.displacement(&solver.step_config);
+    let q = solver.state.Q();
     assert_relative_eq!(
         Vector3::from(q.fixed_view::<3, 1>(0, num_nodes - 1)),
         Vector3::new(
-            -0.09007939365535306,
-            -0.06458366400269204,
-            1.2281361243687572
+            -0.09019953380447539,
+            -0.06472124330431532,
+            1.2287474434408805
         ),
         epsilon = 1e-6
     )

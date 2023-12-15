@@ -124,7 +124,7 @@ impl Element {
                         qp.weight
                             * (self.shape_func_interp[(i, sl)]
                                 * mats[i]
-                                * self.shape_func_deriv[(j, sl)]
+                                * self.shape_func_interp[(j, sl)]
                                 * self.jacobian[sl]),
                     );
                 }
@@ -538,26 +538,6 @@ impl QuadraturePoint {
                 + (rho * omega_dot.tilde() - (rho * omega_dot).tilde())
                 + omega.tilde() * (rho * omega.tilde() - (rho * omega).tilde())),
         );
-
-        // let alpha: Vector3 = (omega_dot.tilde() + omega.tilde() * omega.tilde()) * m * eta;
-        // let beta: Vector3 = omega.tilde() * m * eta;
-        // let gamma: Vector3 = rho * omega_dot + omega.tilde() * rho * omega;
-        // let eps: Matrix3 =
-        //     omega.tilde() * rho + (omega.tilde() * rho).transpose() - (rho * omega).tilde();
-
-        // let mut Guu: Matrix6 = Matrix6::zeros();
-        // Guu.fixed_view_mut::<3, 3>(0, 3)
-        //     .copy_from(&(2. * m * eta.tilde().transpose() - 2. * beta.tilde()));
-        // Guu.fixed_view_mut::<3, 3>(3, 3)
-        //     .copy_from(&(2. * rho + eps));
-        // self.Guu.copy_from(&Guu);
-
-        // let mut Kuu: Matrix6 = Matrix6::zeros();
-        // Kuu.fixed_view_mut::<3, 3>(0, 3)
-        //     .copy_from(&(m * eta.tilde().transpose() - 2. * beta.tilde() - alpha.tilde()));
-        // Kuu.fixed_view_mut::<3, 3>(3, 3)
-        //     .copy_from(&(rho + eps + (u_ddot.tilde() * m * eta.tilde() - gamma.tilde())));
-        // self.Kuu.copy_from(&Kuu);
     }
 }
 
@@ -884,10 +864,18 @@ mod tests {
             epsilon = 1.0e-7
         );
 
-        // Get stiffness matrix
+        // Get elastic stiffness matrix
         let K_E: MatrixN = elem.K_E();
         assert_relative_eq!(K_E[(0, 0)], 1.7424, epsilon = 1.0e-4);
         assert_relative_eq!(K_E[(0, 1)], 2.5965, epsilon = 1.0e-4);
+
+        // Get inertial stiffness matrix
+        let K_I: MatrixN = elem.K_I();
+
+        // Get gyroscopic matrix
+        let G: MatrixN = elem.G();
+
+        print!("{}", R_I);
     }
 
     #[test]

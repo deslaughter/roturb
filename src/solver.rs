@@ -34,80 +34,105 @@ impl StepConfig {
             gamma_prime,
         }
     }
-    /// value for conditioning the solver system
-    pub fn conditioning_value(&self) -> f64 {
-        self.beta * self.h * self.h
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pub t: f64,             // time
-    q: Matrix7xX,           // displacement
-    pub q_delta: Matrix6xX, // change in displacement
-    pub v: Matrix6xX,       // velocity
-    pub vd: Matrix6xX,      // acceleration
-    pub a: Matrix6xX,       // algorithm acceleration
+    cfg: StepConfig,    // time step configuration
+    num_nodes: usize,   // number of nodes
+    t: f64,             // time
+    qp: Matrix7xX,      // displacement at end of previous step
+    q_delta: Matrix6xX, // change in displacement
+    q: Matrix7xX,       // current displacement
+    v: Matrix6xX,       // velocity
+    vd: Matrix6xX,      // acceleration
+    a: Matrix6xX,       // algorithm acceleration
 }
 
 impl State {
-    pub fn new(num_nodes: usize, t0: f64) -> Self {
+    pub fn new(cfg: &StepConfig, num_nodes: usize, t0: f64) -> Self {
         State {
+            cfg: cfg.clone(),
+            num_nodes,
             t: t0,
-            q: Matrix7xX::zeros(num_nodes),
+            qp: Matrix7xX::zeros(num_nodes),
             q_delta: Matrix6xX::zeros(num_nodes),
+            q: Matrix7xX::zeros(num_nodes),
             v: Matrix6xX::zeros(num_nodes),
             vd: Matrix6xX::zeros(num_nodes),
             a: Matrix6xX::zeros(num_nodes),
         }
     }
-    /// Returns structure predicting the state at the end of the next step
-    pub fn predict_next(&self, cfg: &StepConfig) -> State {
-        // Calculate algorithmic acceleration
-        let a: Matrix6xX = (cfg.alpha_f * &self.vd - cfg.alpha_m * &self.a) / (1. - cfg.alpha_m);
+    pub fn new_with_initial_state(
+        cfg: &StepConfig,
+        num_nodes: usize,
+        t0: f64,
+        Q: &Matrix7xX,
+        V: &Matrix6xX,
+        A: &Matrix6xX,
+    ) -> Self {
         State {
-            // Get next state time
-            t: self.t + cfg.h,
-            // Initial displacements are final displacements from previous step
-            q: self.displacement(cfg),
+            cfg: cfg.clone(),
+            num_nodes,
+            t: t0,
+            qp: Q.clone(),
+            q_delta: Matrix6xX::zeros(num_nodes),
+            q: Q.clone(),
+            v: V.clone(),
+            vd: A.clone(),
+            a: Matrix6xX::zeros(num_nodes),
+        }
+    }
+    /// Returns structure predicting the state at the end of the next step
+    pub fn predict_next(&self) -> State {
+        // Calculate algorithmic acceleration
+        let a: Matrix6xX =
+            (self.cfg.alpha_f * &self.vd - self.cfg.alpha_m * &self.a) / (1. - self.cfg.alpha_m);
+        let mut ns = State {
+            // Store step configuration
+            cfg: self.cfg.clone(),
+            num_nodes: self.num_nodes,
+            // Get next state time (time at end of step)
+            t: self.t + self.cfg.h,
+            // Save final displacements from current state as previous displacements
+            qp: self.q.clone(),
+            // Initialize current displacements to zero
+            q: Matrix7xX::zeros(self.q.ncols()),
             // Calculate change in displacement/rotation (average velocity)
-            q_delta: &self.v + (0.5 - cfg.beta) * cfg.h * &self.a + cfg.beta * cfg.h * &a,
+            q_delta: &self.v
+                + (0.5 - self.cfg.beta) * self.cfg.h * &self.a
+                + self.cfg.beta * self.cfg.h * &a,
             // Calculate velocity
-            v: &self.v + cfg.h * (1. - cfg.gamma) * &self.a + cfg.gamma * cfg.h * &a,
+            v: &self.v
+                + self.cfg.h * (1. - self.cfg.gamma) * &self.a
+                + self.cfg.gamma * self.cfg.h * &a,
             // Initialize acceleration to zero
             vd: Matrix6xX::zeros(self.vd.ncols()),
             a,
-        }
+        };
+        // Calculate new displacements
+        // (delta_x is zero so q_delta, velocity, and acceleration don't change)
+        ns.update(&Matrix6xX::zeros(self.q.ncols()));
+        ns
     }
     /// Updates predicted state during a convergence iteration
-    pub fn update(&mut self, delta_x: &Matrix6xX, cfg: &StepConfig) {
-        self.q_delta += delta_x / cfg.h;
-        self.v += cfg.gamma_prime * delta_x;
-        self.vd += cfg.beta_prime * delta_x;
-    }
-    /// Updates the algorithmic acceleration at the end of a time step
-    pub fn update_algorithmic_acceleration(&mut self, cfg: &StepConfig) {
-        self.a += (1. - cfg.alpha_f) / (1. - cfg.alpha_m) * &self.vd;
-    }
-    pub fn set_displacement(&mut self, Q: &Matrix7xX) {
-        self.q.copy_from(Q);
-    }
-    /// Returns state displacement matrix (initial displacement + delta displacement)
-    pub fn displacement(&self, cfg: &StepConfig) -> Matrix7xX {
-        let mut Q: Matrix7xX = Matrix7xX::zeros(self.q.ncols());
+    pub fn update(&mut self, delta_x: &Matrix6xX) {
+        self.q_delta += delta_x / self.cfg.h;
+        self.v += self.cfg.gamma_prime * delta_x;
+        self.vd += self.cfg.beta_prime * delta_x;
 
         // Get change in delta multiplied by time step
-        let qd: Matrix6xX = &self.q_delta * cfg.h;
+        let qd: Matrix6xX = &self.q_delta * self.cfg.h;
 
-        // Calculate new displacements
-        let mut un = Q.fixed_rows_mut::<3>(0);
-        let u = self.q.fixed_rows::<3>(0);
+        // Calculate new displacement
+        let mut un = self.q.fixed_rows_mut::<3>(0);
+        let u = self.qp.fixed_rows::<3>(0);
         let du = qd.fixed_rows::<3>(0);
         un.copy_from(&(&u + &du));
 
-        // Calculate new rotations
-        let mut rn = Q.fixed_rows_mut::<4>(3);
-        let r = self.q.fixed_rows::<4>(3);
+        // Calculate new rotation
+        let mut rn = self.q.fixed_rows_mut::<4>(3);
+        let r = self.qp.fixed_rows::<4>(3);
         let dr = qd.fixed_rows::<3>(3);
         for i in 0..r.ncols() {
             let R1: UnitQuaternion = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
@@ -116,22 +141,34 @@ impl State {
             rn.column_mut(i)
                 .copy_from(&Vector4::new(Rn.w, Rn.i, Rn.j, Rn.k));
         }
-        Q
+    }
+    /// Updates the algorithmic acceleration at the end of a time step
+    pub fn update_algorithmic_acceleration(&mut self) {
+        self.a += (1. - self.cfg.alpha_f) / (1. - self.cfg.alpha_m) * &self.vd;
+    }
+    /// Returns state time
+    pub fn time(&self) -> f64 {
+        self.t
+    }
+    /// Returns state displacement matrix
+    pub fn Q(&self) -> Matrix7xX {
+        self.q.clone()
     }
     /// Returns state velocity matrix
-    pub fn velocity(&self) -> Matrix6xX {
+    pub fn V(&self) -> Matrix6xX {
         self.v.clone()
     }
     /// Returns state acceleration matrix
-    pub fn acceleration(&self) -> Matrix6xX {
+    pub fn A(&self) -> Matrix6xX {
         self.vd.clone()
     }
+
     /// Returns tangent operator matrix for modifying iteration matrix
-    pub fn tangent_operator(&self, cfg: &StepConfig) -> MatrixN {
+    pub fn tangent_operator(&self) -> MatrixN {
         let mut T: MatrixN = MatrixN::zeros(self.q_delta.len(), self.q_delta.len());
 
         // Get change in delta multiplied by time step
-        let qd: Matrix6xX = &self.q_delta * cfg.h;
+        let qd: Matrix6xX = &self.q_delta * self.cfg.h;
 
         // Loop through nodes
         for i in 0..self.q_delta.ncols() {
@@ -146,11 +183,15 @@ impl State {
         }
         T
     }
+
+    /// Returns value for conditioning the solver system
+    pub fn conditioning_value(&self) -> f64 {
+        self.cfg.beta * self.cfg.h.powi(2)
+    }
 }
 
 pub struct GeneralizedAlphaSolver {
     pub state: State,
-    pub step_config: StepConfig,
     num_state_nodes: usize,
     num_constraint_nodes: usize,
     St: MatrixD, // iteration matrix
@@ -166,8 +207,7 @@ impl GeneralizedAlphaSolver {
     pub fn new(
         num_state_nodes: usize,
         num_constraint_nodes: usize,
-        step_config: &StepConfig,
-        t0: f64,
+        state0: &State,
         gravity: Vector3,
     ) -> Self {
         let num_state_dofs = num_state_nodes * 6;
@@ -176,7 +216,7 @@ impl GeneralizedAlphaSolver {
         let ndofs = num_state_dofs + num_constraint_dofs;
 
         // Solution conditioning
-        let cond_scale = step_config.conditioning_value();
+        let cond_scale = state0.conditioning_value();
         let mut DL_diag: VectorD = VectorD::zeros(ndofs).add_scalar(1.);
         DL_diag.rows_mut(0, num_state_dofs).fill(cond_scale);
         let DL: MatrixD = MatrixD::from_diagonal(&DL_diag);
@@ -188,10 +228,9 @@ impl GeneralizedAlphaSolver {
 
         // Generalized Alpha structure
         GeneralizedAlphaSolver {
-            step_config: step_config.clone(),
             num_state_nodes,
             num_constraint_nodes,
-            state: State::new(num_state_nodes, t0),
+            state: state0.clone(),
             St: MatrixN::zeros(ndofs, ndofs),
             R: VectorN::zeros(ndofs),
             gravity,
@@ -210,7 +249,7 @@ impl GeneralizedAlphaSolver {
         let num_constraint_dofs = self.num_constraint_nodes * 6;
 
         // Predict the next step
-        let mut state_next = self.state.predict_next(&self.step_config);
+        let mut state_next = self.state.predict_next();
 
         // Initialize lambda
         let mut lambda: VectorD = VectorD::zeros(num_constraint_dofs);
@@ -218,44 +257,28 @@ impl GeneralizedAlphaSolver {
         let mut energy_increment_ref: f64 = 0.;
 
         // Convergence iterations
-        for i in 0..1000 {
-            // Predict next displacement and velocity
-            let Q: Matrix7xX = state_next.displacement(&self.step_config);
-            let V: Matrix6xX = state_next.velocity();
-            let A: Matrix6xX = state_next.acceleration();
-
-            // Apply updated displacements to element
+        for i in 0..50 {
+            // Get predicted state and apply to element
+            let Q: Matrix7xX = state_next.Q();
+            let V: Matrix6xX = state_next.V();
+            let A: Matrix6xX = state_next.A();
             elem.update_states(&Q, &V, &A, &self.gravity);
 
-            // Get constraints_gradient_matrix
-            let B: Matrix6xX = elem.constraints_gradient_matrix();
-
-            // Get element residual vector
+            // Get element residual vector, stiffness, damping, and mass matrices
             let R_FE: VectorD = elem.R_FE();
-
-            // Get constraints residual vector
-            let F_C: VectorD = B.transpose() * &lambda;
-
-            // Get constraint_residual_vector
-            let Phi: Vector6 = elem.constraint_residual_vector();
-
-            // Assemble the residual vector
-            self.R.fill(0.);
-            self.R.rows_mut(0, num_node_dofs).add_assign(&(R_FE + F_C));
-            self.R
-                .rows_mut(num_node_dofs, num_constraint_dofs)
-                .add_assign(&Phi);
-
-            // Element matrices
+            let K_FE: MatrixD = elem.K_FE();
             let M: MatrixD = elem.M();
             let G: MatrixD = elem.G();
-            let K_FE: MatrixD = elem.K_FE();
 
             // Constraint contribution to static iteration matrix
             let K_C: MatrixD = MatrixD::zeros(K_FE.nrows(), K_FE.ncols());
 
             // Tangent operator
-            let T: MatrixD = state_next.tangent_operator(&self.step_config);
+            let T: MatrixD = state_next.tangent_operator();
+
+            // Assemble the residual vector
+            self.R.fill(0.);
+            self.R.rows_mut(0, num_node_dofs).add_assign(&(R_FE));
 
             // Assemble iteration matrix
             self.St.fill(0.);
@@ -263,59 +286,80 @@ impl GeneralizedAlphaSolver {
             self.St
                 .view_mut((0, 0), (num_node_dofs, num_node_dofs))
                 .add_assign(
-                    M * self.step_config.beta_prime
-                        + G * self.step_config.gamma_prime
+                    M * state_next.cfg.beta_prime
+                        + G * state_next.cfg.gamma_prime
                         + (K_FE + K_C) * &T,
                 );
-            // Quadrant 1,2
-            self.St
-                .view_mut((num_node_dofs, 0), (num_constraint_dofs, num_node_dofs))
-                .add_assign(&B * &T);
-            // Quadrant 2,1
-            self.St
-                .view_mut((0, num_node_dofs), (num_node_dofs, num_constraint_dofs))
-                .add_assign(&B.transpose());
 
-            // Condition the iteration matrix
-            self.St = &self.DL * &self.St * &self.DR;
-            self.R.component_mul_assign(&self.DL_diag);
+            // If there are constraint nodes
+            if self.num_constraint_nodes > 0 {
+                // Get constraints_gradient_matrix
+                let B: Matrix6xX = elem.constraints_gradient_matrix();
 
+                // Get constraints residual vector
+                let F_C: VectorD = B.transpose() * &lambda;
+
+                // Get constraint_residual_vector
+                let Phi: Vector6 = elem.constraint_residual_vector();
+
+                self.R
+                    .rows_mut(num_node_dofs, num_constraint_dofs)
+                    .add_assign(&Phi);
+                self.R.rows_mut(0, num_node_dofs).add_assign(&(F_C));
+
+                // Quadrant 1,2
+                self.St
+                    .view_mut((num_node_dofs, 0), (num_constraint_dofs, num_node_dofs))
+                    .add_assign(&B * &T);
+                // Quadrant 2,1
+
+                self.St
+                    .view_mut((0, num_node_dofs), (num_node_dofs, num_constraint_dofs))
+                    .add_assign(&B.transpose());
+            }
+
+            // Condition the iteration matrix and residuals
+            let St: MatrixD = &self.DL * &self.St * &self.DR;
+            let R: VectorD = self.R.component_mul(&self.DL_diag);
+
+            let mut x = VectorD::zeros(num_node_dofs);
             // Solve system
-            let mut x: VectorD = self
-                .St
-                .clone()
-                .lu()
-                .solve(&self.R)
-                .expect("Matrix is not invertable");
+            if num_constraint_dofs == 0 {
+                let xx: VectorD = St
+                    .view((6, 6), (num_node_dofs - 6, num_node_dofs - 6))
+                    .lu()
+                    .solve(&R.rows(6, num_node_dofs - 6))
+                    .expect("Matrix is not invertable");
+                x.rows_mut(6, num_node_dofs - 6).copy_from(&xx);
+            } else {
+                x = St.lu().solve(&R).expect("Matrix is not invertable");
+            }
 
             // Un-condition the solution vector
-            x.component_mul_assign(&self.DR_diag);
+            let x: VectorD = -x.component_mul(&self.DR_diag);
 
             // Extract delta x and delta lambda from system solution
             let delta_x: Matrix6xX =
-                -Matrix6xX::from_column_slice(x.rows(0, num_node_dofs).as_slice());
-            let lambda_delta: VectorD = -VectorD::from(x.rows(num_node_dofs, num_constraint_dofs));
+                Matrix6xX::from_column_slice(x.rows(0, num_node_dofs).as_slice());
+            let lambda_delta: VectorD = x.rows(num_node_dofs, num_constraint_dofs).clone_owned();
 
             // update state and lambda
-            state_next.update(&delta_x, &self.step_config);
+            state_next.update(&delta_x);
             lambda += lambda_delta;
 
             // Check for convergence
-            let energy_increment = self.R.dot(&x);
+            let energy_increment = self.R.dot(&x).abs();
+            res_norm.push(energy_increment);
             if i == 0 {
                 energy_increment_ref = energy_increment;
             }
-            res_norm.push(if energy_increment_ref == 0. {
-                0.
-            } else {
-                energy_increment / energy_increment_ref
-            });
-            if energy_increment_ref == 0. || (energy_increment / energy_increment_ref < 1e-3) {
-                state_next.update_algorithmic_acceleration(&self.step_config);
+            if energy_increment < 1e-8 || (energy_increment / energy_increment_ref < 1e-5) {
+                state_next.update_algorithmic_acceleration();
                 self.state = state_next;
                 return Some(res_norm);
             }
         }
+        // Solution did not converge
         None
     }
 }
