@@ -14,6 +14,7 @@ use super::{
 
 #[derive(Debug)]
 pub struct Element {
+    pub q_root: Vector7,
     pub nodes: Nodes,
     pub qps: Vec<QuadraturePoint>,
     pub shape_func_interp: MatrixNxQ,
@@ -185,15 +186,26 @@ impl Element {
     }
 
     pub fn constraint_residual_vector(&self) -> Vector6 {
-        let r = Vector4::from(self.nodes.r.column(0)).as_unit_quaternion();
-        let rot_vec: Vector3 = r.scaled_axis();
+        let root_r = self
+            .q_root
+            .fixed_rows::<4>(3)
+            .clone_owned()
+            .as_unit_quaternion()
+            .scaled_axis();
+        let n1_r: Vector3 = self
+            .nodes
+            .r
+            .fixed_columns::<1>(0)
+            .clone_owned()
+            .as_unit_quaternion()
+            .scaled_axis();
         Vector6::new(
-            self.nodes.u[0],
-            self.nodes.u[1],
-            self.nodes.u[2],
-            rot_vec[0],
-            rot_vec[1],
-            rot_vec[2],
+            self.nodes.u[0] - self.q_root[0],
+            self.nodes.u[1] - self.q_root[1],
+            self.nodes.u[2] - self.q_root[2],
+            n1_r[0] - root_r[0],
+            n1_r[1] - root_r[1],
+            n1_r[2] - root_r[2],
         )
     }
 
@@ -344,6 +356,7 @@ impl Nodes {
 
         // Build and return element
         Element {
+            q_root: Vector7::zeros(),
             nodes: self.clone(),
             qps,
             shape_func_interp,

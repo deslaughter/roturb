@@ -35,6 +35,7 @@ pub type Matrix7xX = nalgebra::OMatrix<f64, U7, Dyn>;
 pub type Vector3 = nalgebra::Vector3<f64>;
 pub type Vector4 = nalgebra::Vector4<f64>;
 pub type Vector6 = nalgebra::Vector6<f64>;
+pub type Vector7 = nalgebra::OVector<f64, U7>;
 
 /// Column vector (Nodes)
 pub type VectorN = nalgebra::DVector<f64>;
