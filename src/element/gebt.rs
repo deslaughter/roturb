@@ -866,16 +866,22 @@ mod tests {
 
         // Get elastic stiffness matrix
         let K_E: MatrixN = elem.K_E();
-        assert_relative_eq!(K_E[(0, 0)], 1.7424, epsilon = 1.0e-4);
-        assert_relative_eq!(K_E[(0, 1)], 2.5965, epsilon = 1.0e-4);
+        assert_relative_eq!(K_E[(0, 0)], 1.7424036187210084, epsilon = 1.0e-12);
+        assert_relative_eq!(K_E[(0, 1)], 2.596502219359714, epsilon = 1.0e-12);
 
         // Get inertial stiffness matrix
         let K_I: MatrixN = elem.K_I();
+        assert_relative_eq!(K_I[(0, 0)], 0., epsilon = 1e-12);
+        assert_relative_eq!(K_I[(0, 3)], -0.000570418198072867, epsilon = 1e-12);
 
         // Get gyroscopic matrix
         let G: MatrixN = elem.G();
+        assert_relative_eq!(G[(0, 0)], 0., epsilon = 1e-12);
+        assert_relative_eq!(G[(0, 3)], -0.000191187897249299, epsilon = 1e-12);
 
-        print!("{}", R_I);
+        // Get mass matrix
+        let M: MatrixN = elem.M();
+        assert_relative_eq!(M[(0, 0)], 0.477242989475536, epsilon = 1e-12);
     }
 
     #[test]
