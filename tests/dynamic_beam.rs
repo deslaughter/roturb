@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use std::io::Write;
 
 use roturb::{
@@ -263,7 +265,7 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
                     .expect("fail");
                 file.write_fmt(format_args!(",{:?}", energy_incs.len()))
                     .expect("fail");
-                for &v in solver.state.Q().iter() {
+                for &v in solver.state.Q().columns(num_nodes - 1, 1).iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
