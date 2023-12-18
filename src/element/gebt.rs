@@ -186,26 +186,28 @@ impl Element {
     }
 
     pub fn constraint_residual_vector(&self) -> Vector6 {
+        // Root rotation as unit quaternions
         let root_r = self
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
-        let n1_r: Vector3 = self
+            .as_unit_quaternion();
+        // Node 1 rotation as unit quaternions
+        let n1_r = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
+            .as_unit_quaternion();
+        // Calculate rotation difference as rotation vector
+        let diff_r: Vector3 = (n1_r * root_r.inverse()).scaled_axis();
         Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            n1_r[0] - root_r[0],
-            n1_r[1] - root_r[1],
-            n1_r[2] - root_r[2],
+            diff_r[0],
+            diff_r[1],
+            diff_r[2],
         )
     }
 
