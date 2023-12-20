@@ -121,13 +121,9 @@ impl Element {
             for j in 0..self.nodes.num {
                 let mut Mij = M.fixed_view_mut::<6, 6>(i * 6, j * 6);
                 for (sl, qp) in self.qps.iter().enumerate() {
-                    Mij.add_assign(
-                        qp.weight
-                            * (self.shape_func_interp[(i, sl)]
-                                * mats[i]
-                                * self.shape_func_interp[(j, sl)]
-                                * self.jacobian[sl]),
-                    );
+                    let phi_i = self.shape_func_interp[(i, sl)];
+                    let phi_j = self.shape_func_interp[(j, sl)];
+                    Mij.add_assign(qp.weight * phi_i * mats[sl] * phi_j * self.jacobian[sl]);
                 }
             }
         }
@@ -191,23 +187,23 @@ impl Element {
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion();
+            .as_unit_quaternion()
+            .scaled_axis();
         // Node 1 rotation as unit quaternions
         let n1_r = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion();
-        // Calculate rotation difference as rotation vector
-        let diff_r: Vector3 = (n1_r * root_r.inverse()).scaled_axis();
+            .as_unit_quaternion()
+            .scaled_axis();
         Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            diff_r[0],
-            diff_r[1],
-            diff_r[2],
+            n1_r[0] - root_r[0],
+            n1_r[1] - root_r[1],
+            n1_r[2] - root_r[2],
         )
     }
 
@@ -358,7 +354,7 @@ impl Nodes {
 
         // Build and return element
         Element {
-            q_root: Vector7::zeros(),
+            q_root: Vector7::from_vec(vec![0., 0., 0., 1., 0., 0., 0.]),
             nodes: self.clone(),
             qps,
             shape_func_interp,
@@ -479,7 +475,8 @@ impl QuadraturePoint {
         let C12 = self.Cuu.fixed_view::<3, 3>(0, 3);
 
         // Sectional strain
-        let e1: Vector3 = self.x0_prime + u_prime - R * self.x0_prime;
+        let Rm: Matrix3 = R.to_rotation_matrix().matrix().clone_owned();
+        let e1: Vector3 = self.x0_prime + u_prime - Rm * self.x0_prime;
         let e2: Vector3 = 2. * R.F() * Vector4::new(R_prime.w, R_prime.i, R_prime.j, R_prime.k); // kappa
         self.strain = Vector6::new(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2]);
 
@@ -887,16 +884,17 @@ mod tests {
         // Get inertial stiffness matrix
         let K_I: MatrixN = elem.K_I();
         assert_relative_eq!(K_I[(0, 0)], 0., epsilon = 1e-12);
-        assert_relative_eq!(K_I[(0, 3)], -0.000570418198072867, epsilon = 1e-12);
+        assert_relative_eq!(K_I[(0, 3)], -0.00103122831912768, epsilon = 1e-12);
 
         // Get gyroscopic matrix
         let G: MatrixN = elem.G();
         assert_relative_eq!(G[(0, 0)], 0., epsilon = 1e-12);
-        assert_relative_eq!(G[(0, 3)], -0.000191187897249299, epsilon = 1e-12);
+        assert_relative_eq!(G[(0, 3)], -0.000142666315350446, epsilon = 1e-12);
 
         // Get mass matrix
         let M: MatrixN = elem.M();
         assert_relative_eq!(M[(0, 0)], 0.477242989475536, epsilon = 1e-12);
+        assert_relative_eq!(M[(4, 0)], 0.148588501603872, epsilon = 1e-12);
     }
 
     #[test]

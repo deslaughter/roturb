@@ -1,14 +1,11 @@
 #![allow(non_snake_case)]
 
-use std::io::Write;
+use std::{f64::consts::PI, io::Write};
 
 use roturb::{
     element::{
         gebt::{Element, Material, Nodes, Section},
-        interp::{
-            gauss_legendre_lobotto_points, lagrange_polynomial_derivative,
-            quaternion_from_tangent_twist,
-        },
+        interp::gauss_legendre_lobotto_points,
         quadrature::Quadrature,
     },
     prelude::*,
@@ -61,6 +58,7 @@ fn build_element() -> Element {
 
     // Quadrature rule
     let gq = Quadrature::gauss(7);
+    // let gq = Quadrature::gauss_legendre_lobotto(5); // Nodal quadrature
 
     // Create element from nodes
     nodes.element(&gq, &sections)
@@ -94,8 +92,13 @@ fn test_cantilever_beam_with_with_sin_load() {
     let state0: State = State::new(&step_config, num_state_nodes, t0);
 
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(num_state_nodes, num_constraint_nodes, &state0, gravity);
+    let mut solver = GeneralizedAlphaSolver::new(
+        num_state_nodes,
+        num_constraint_nodes,
+        &state0,
+        gravity,
+        true,
+    );
 
     // Create vector to store iteration states
     let mut states: Vec<State> = vec![solver.state.clone()];
@@ -128,7 +131,7 @@ fn test_cantilever_beam_with_with_sin_load() {
                     .expect("fail");
                 file.write_fmt(format_args!(",{:?}", energy_incs.len()))
                     .expect("fail");
-                for &v in solver.state.Q().iter() {
+                for &v in solver.state.q().iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
@@ -151,7 +154,7 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
     let mut elem = build_element();
 
     //--------------------------------------------------------------------------
-    // Apply loads
+    // Create element and solver
     //--------------------------------------------------------------------------
 
     // Number of state and constraint nodes
@@ -168,14 +171,19 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
     let gravity: Vector3 = Vector3::new(0., 0., 0.);
 
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(num_state_nodes, num_constraint_nodes, &state0, gravity);
+    let mut solver = GeneralizedAlphaSolver::new(
+        num_state_nodes,
+        num_constraint_nodes,
+        &state0,
+        gravity,
+        true,
+    );
 
     // Create vector to store iteration states
     let mut states: Vec<State> = vec![solver.state.clone()];
 
     // Sinusoidal force at tip in z direction
-    let point_force = |t: f64| -> f64 { 1.0e2 * (10.0 * t).sin() };
+    let point_force = |t: f64| -> f64 { 100. * (10. * t).sin() };
 
     let mut file = std::fs::File::create("q_dbc.csv").expect("file failure");
 
@@ -191,18 +199,18 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
                 print!("{:.3}s: failed to converge \n", solver.state.time() + h);
                 break;
             }
-            Some(energy_incs) => {
+            Some(iter_data) => {
                 print!(
                     "{:.3}s: converged in {} iterations\n",
                     solver.state.time(),
-                    energy_incs.len()
+                    iter_data.len()
                 );
                 states.push(solver.state.clone());
                 file.write_fmt(format_args!("{:?}", solver.state.time()))
                     .expect("fail");
-                file.write_fmt(format_args!(",{:?}", energy_incs.len()))
+                file.write_fmt(format_args!(",{:?}", iter_data.len()))
                     .expect("fail");
-                for &v in solver.state.Q().columns(elem.nodes.num - 1, 1).iter() {
+                for &v in solver.state.q().columns(elem.nodes.num - 1, 1).iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
@@ -216,10 +224,14 @@ fn test_rotating_beam() {
     // Solver parameters
     let rho_inf: f64 = 0.0;
     let t0: f64 = 0.;
-    let tf: f64 = 6.;
+    let tf: f64 = 20.;
     let h: f64 = 0.005;
 
     let mut elem = build_element();
+
+    // let rot0 = PI;
+    let rot0 = 0.;
+    let r0: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rot0);
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -230,17 +242,31 @@ fn test_rotating_beam() {
 
     // Number of state and constraint nodes
     let num_state_nodes = elem.nodes.num;
-    let num_constraint_nodes = 1;
+    let num_constraint_nodes = 0;
 
     // Create generalized alpha step configuration
     let step_config: StepConfig = StepConfig::new(rho_inf, h);
 
     // Create initial state
-    let state0: State = State::new(&step_config, num_state_nodes, t0);
+    let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
+    for (i, mut c) in Q.column_iter_mut().enumerate() {
+        c.rows_mut(0, 3)
+            .copy_from(&(r0 * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
+        c.rows_mut(3, 4).copy_from(&r0.wijk());
+    }
+    let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+    let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+    let state0: State =
+        State::new_with_initial_state(&step_config, num_state_nodes, t0, &Q, &V, &A);
 
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(num_state_nodes, num_constraint_nodes, &state0, gravity);
+    let mut solver = GeneralizedAlphaSolver::new(
+        num_state_nodes,
+        num_constraint_nodes,
+        &state0,
+        gravity,
+        true,
+    );
 
     // Create vector to store iteration states
     let mut states: Vec<State> = vec![solver.state.clone()];
@@ -248,41 +274,68 @@ fn test_rotating_beam() {
     let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
     let _ = std::fs::remove_dir_all("vtk");
     std::fs::create_dir("vtk").unwrap();
+    let _ = std::fs::remove_dir_all("iter");
+    std::fs::create_dir("iter").unwrap();
 
     let num_steps = (tf / h).ceil() as usize + 1;
 
     for i in 0..num_steps {
-        let rotz = 0.5 * solver.state.time();
-        if rotz > 1. {
-            print!("{:.3} rad\n", rotz);
-        }
-        elem.q_root
-            .fixed_rows_mut::<4>(3)
-            .copy_from(&UnitQuaternion::from_euler_angles(0., 0., rotz).wijk());
+        let t = (i as f64) * h;
+
+        // Prescribe element root displacement
+        let rotz = 0.5 * (t + h) + rot0;
+        let r: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rotz);
+        elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
+
+        // Replace solver state
+        // let rotz = 0.5 * t + rot0;
+        // let r: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rotz);
+        // let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
+        // for (i, mut c) in Q.column_iter_mut().enumerate() {
+        //     c.rows_mut(0, 3)
+        //         .copy_from(&(r * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
+        //     c.rows_mut(3, 4).copy_from(&r.wijk());
+        // }
+        // let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        // let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        // solver.state = State::new_with_initial_state(&step_config, num_state_nodes, t, &Q, &V, &A);
+
         // Solve time step
         match solver.step(&mut elem) {
             None => {
                 print!("{:.3}s: failed to converge \n", solver.state.time() + h);
                 break;
             }
-            Some(energy_incs) => {
+            Some(iter_data) => {
+                let t = solver.state.time();
                 print!(
-                    "{:.3}s: converged in {} iterations\n",
-                    solver.state.time(),
-                    energy_incs.len()
+                    "Step {:3}, t={:.3}s: converged in {:2} iterations ({:.5} rad)\n",
+                    i,
+                    t,
+                    iter_data.len(),
+                    rotz
                 );
                 states.push(solver.state.clone());
-                file.write_fmt(format_args!("{:?}", solver.state.time()))
+                file.write_fmt(format_args!("{:?}", t)).expect("fail");
+                file.write_fmt(format_args!(",{:?}", iter_data.len()))
                     .expect("fail");
-                file.write_fmt(format_args!(",{:?}", energy_incs.len()))
-                    .expect("fail");
-                for &v in solver.state.Q().iter() {
+                for &v in solver.state.q().iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
 
                 let vtk = element_vtk(&elem);
                 vtk.export_ascii(format!("vtk/step_{:0>3}.vtk", i)).unwrap();
+
+                let mut f =
+                    std::fs::File::create(format!("iter/step_{:0>3}_conv_x.csv", i)).unwrap();
+                for (i, idata) in iter_data.iter().enumerate() {
+                    f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
+                    for &v in idata.x.iter() {
+                        f.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                    }
+                    f.write_all(b"\n").expect("fail");
+                }
             }
         }
     }
@@ -290,9 +343,19 @@ fn test_rotating_beam() {
     use vtkio::model::*; // import model definition of a VTK file
 
     fn element_vtk(elem: &Element) -> Vtk {
-        let mut a = vec![0, elem.nodes.num - 1];
-        let b = (1..elem.nodes.num - 1).collect_vec();
-        a.extend(b);
+        let rotations: Vec<Matrix3> = elem
+            .nodes
+            .r0
+            .column_iter()
+            .zip(elem.nodes.r.column_iter())
+            .map(|(r0, r)| {
+                (r0.clone_owned().as_unit_quaternion() * r.clone_owned().as_unit_quaternion())
+                    .to_rotation_matrix()
+                    .matrix()
+                    .clone_owned()
+            })
+            .collect_vec();
+        let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
 
         Vtk {
             version: Version { major: 4, minor: 2 },
@@ -303,12 +366,38 @@ fn test_rotating_beam() {
                 points: IOBuffer::F64((&elem.nodes.u + &elem.nodes.x0).as_slice().to_vec()),
                 cells: Cells {
                     cell_verts: VertexNumbers::XML {
-                        connectivity: a.iter().map(|&i| i as u64).collect_vec(),
+                        connectivity: {
+                            let mut a = vec![0, elem.nodes.num - 1];
+                            let b = (1..elem.nodes.num - 1).collect_vec();
+                            a.extend(b);
+                            a.iter().map(|&i| i as u64).collect_vec()
+                        },
                         offsets: vec![elem.nodes.num as u64],
                     },
                     types: vec![CellType::LagrangeCurve],
                 },
                 data: Attributes {
+                    point: orientations
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &orientation)| {
+                            Attribute::DataArray(DataArrayBase {
+                                name: orientation.to_string(),
+                                elem: ElementType::Vectors,
+                                data: IOBuffer::F32(
+                                    rotations
+                                        .iter()
+                                        .flat_map(|r| {
+                                            r.column(i)
+                                                .iter()
+                                                .map(|&v| ((v * 1.0e7).round() / 1.0e7) as f32)
+                                                .collect_vec()
+                                        })
+                                        .collect_vec(),
+                                ),
+                            })
+                        })
+                        .collect_vec(),
                     ..Default::default()
                 },
             }),

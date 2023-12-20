@@ -43,7 +43,6 @@ pub struct State {
     t: f64,             // time
     qp: Matrix7xX,      // displacement at end of previous step
     q_delta: Matrix6xX, // change in displacement
-    q: Matrix7xX,       // current displacement
     v: Matrix6xX,       // velocity
     vd: Matrix6xX,      // acceleration
     a: Matrix6xX,       // algorithm acceleration
@@ -57,12 +56,12 @@ impl State {
             t: t0,
             qp: Matrix7xX::zeros(num_nodes),
             q_delta: Matrix6xX::zeros(num_nodes),
-            q: Matrix7xX::zeros(num_nodes),
             v: Matrix6xX::zeros(num_nodes),
             vd: Matrix6xX::zeros(num_nodes),
             a: Matrix6xX::zeros(num_nodes),
         }
     }
+
     pub fn new_with_initial_state(
         cfg: &StepConfig,
         num_nodes: usize,
@@ -77,27 +76,25 @@ impl State {
             t: t0,
             qp: Q.clone(),
             q_delta: Matrix6xX::zeros(num_nodes),
-            q: Q.clone(),
             v: V.clone(),
             vd: A.clone(),
             a: Matrix6xX::zeros(num_nodes),
         }
     }
+
     /// Returns structure predicting the state at the end of the next step
     pub fn predict_next(&self) -> State {
         // Calculate algorithmic acceleration
         let a: Matrix6xX =
             (self.cfg.alpha_f * &self.vd - self.cfg.alpha_m * &self.a) / (1. - self.cfg.alpha_m);
-        let mut ns = State {
+        State {
             // Store step configuration
             cfg: self.cfg.clone(),
             num_nodes: self.num_nodes,
             // Get next state time (time at end of step)
             t: self.t + self.cfg.h,
             // Save final displacements from current state as previous displacements
-            qp: self.q.clone(),
-            // Initialize current displacements to zero
-            q: Matrix7xX::zeros(self.q.ncols()),
+            qp: self.q(),
             // Calculate change in displacement/rotation (average velocity)
             q_delta: &self.v
                 + (0.5 - self.cfg.beta) * self.cfg.h * &self.a
@@ -109,58 +106,56 @@ impl State {
             // Initialize acceleration to zero
             vd: Matrix6xX::zeros(self.vd.ncols()),
             a,
-        };
-        // Calculate new displacements
-        // (delta_x is zero so q_delta, velocity, and acceleration don't change)
-        ns.update(&Matrix6xX::zeros(self.q.ncols()));
-        ns
-    }
-    /// Updates predicted state during a convergence iteration
-    pub fn update(&mut self, delta_x: &Matrix6xX) {
-        self.q_delta += delta_x / self.cfg.h;
-        self.v += self.cfg.gamma_prime * delta_x;
-        self.vd += self.cfg.beta_prime * delta_x;
-
-        // Get change in delta multiplied by time step
-        let qd: Matrix6xX = &self.q_delta * self.cfg.h;
-
-        // Calculate new displacement
-        let mut un = self.q.fixed_rows_mut::<3>(0);
-        let u = self.qp.fixed_rows::<3>(0);
-        let du = qd.fixed_rows::<3>(0);
-        un.copy_from(&(&u + &du));
-
-        // Calculate new rotation
-        let mut rn = self.q.fixed_rows_mut::<4>(3);
-        let r = self.qp.fixed_rows::<4>(3);
-        let dr = qd.fixed_rows::<3>(3);
-        for i in 0..r.ncols() {
-            let R1: UnitQuaternion = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
-            let R2: UnitQuaternion = UnitQuaternion::from_scaled_axis(dr.column(i)); // change in rotation
-            let Rn: UnitQuaternion = R1 * R2; // new rotation
-            rn.column_mut(i)
-                .copy_from(&Vector4::new(Rn.w, Rn.i, Rn.j, Rn.k));
         }
     }
+
+    /// Updates state during a dynamic solve
+    pub fn update_dynamic(&mut self, delta_x: &Matrix6xX) {
+        let dx: Matrix6xX = delta_x.clone();
+        self.q_delta += &dx / self.cfg.h;
+        self.v += self.cfg.gamma_prime * &dx;
+        self.vd += self.cfg.beta_prime * &dx;
+    }
+
+    // Updates state during a static solve
+    pub fn update_static(&mut self, delta_x: &Matrix6xX) {
+        self.q_delta += delta_x / self.cfg.h;
+    }
+
     /// Updates the algorithmic acceleration at the end of a time step
     pub fn update_algorithmic_acceleration(&mut self) {
         self.a += (1. - self.cfg.alpha_f) / (1. - self.cfg.alpha_m) * &self.vd;
     }
+
     /// Returns state time
     pub fn time(&self) -> f64 {
         self.t
     }
+
     /// Returns state displacement matrix
-    pub fn Q(&self) -> Matrix7xX {
-        self.q.clone()
-    }
-    /// Returns state velocity matrix
-    pub fn V(&self) -> Matrix6xX {
-        self.v.clone()
-    }
-    /// Returns state acceleration matrix
-    pub fn A(&self) -> Matrix6xX {
-        self.vd.clone()
+    pub fn q(&self) -> Matrix7xX {
+        // Create storage for displacements
+        let mut q: Matrix7xX = Matrix7xX::zeros(self.qp.ncols());
+
+        // Multiply q_delta by h to get change in state
+        let h_q_delta: Matrix6xX = self.cfg.h * &self.q_delta;
+
+        // Calculate new displacement
+        let u = self.qp.fixed_rows::<3>(0);
+        let du = h_q_delta.fixed_rows::<3>(0);
+        q.fixed_rows_mut::<3>(0).copy_from(&(&u + &du));
+
+        // Calculate new rotation
+        let mut rn = q.fixed_rows_mut::<4>(3);
+        let r = self.qp.fixed_rows::<4>(3);
+        let dr = h_q_delta.fixed_rows::<3>(3);
+        for (i, mut c) in rn.column_iter_mut().enumerate() {
+            let R1: UnitQuaternion = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
+            let R2: UnitQuaternion = UnitQuaternion::from_scaled_axis(dr.column(i)); // change in rotation
+            let Rn: UnitQuaternion = R1 * R2; // new rotation
+            c.copy_from(&Vector4::new(Rn.w, Rn.i, Rn.j, Rn.k));
+        }
+        q
     }
 
     /// Returns tangent operator matrix for modifying iteration matrix
@@ -201,6 +196,7 @@ pub struct GeneralizedAlphaSolver {
     DR_diag: VectorD, // right conditioning vector
     DL: MatrixD,      // left conditioning matrix
     DR: MatrixD,      // right conditioning matrix
+    is_dynamic_solve: bool,
 }
 
 impl GeneralizedAlphaSolver {
@@ -209,6 +205,7 @@ impl GeneralizedAlphaSolver {
         num_constraint_nodes: usize,
         state0: &State,
         gravity: Vector3,
+        is_dynamic_solve: bool,
     ) -> Self {
         let num_state_dofs = num_state_nodes * 6;
         let num_constraint_dofs = num_constraint_nodes * 6;
@@ -219,11 +216,11 @@ impl GeneralizedAlphaSolver {
         let cond_scale = state0.conditioning_value();
         let mut DL_diag: VectorD = VectorD::zeros(ndofs).add_scalar(1.);
         DL_diag.rows_mut(0, num_state_dofs).fill(cond_scale);
-        let DL: MatrixD = MatrixD::from_diagonal(&DL_diag);
         let mut DR_diag: VectorD = VectorD::zeros(ndofs).add_scalar(1.);
         DR_diag
             .rows_mut(num_state_dofs, num_constraint_dofs)
             .fill(1. / (cond_scale));
+        let DL: MatrixD = MatrixD::from_diagonal(&DL_diag);
         let DR: MatrixD = MatrixD::from_diagonal(&DR_diag);
 
         // Generalized Alpha structure
@@ -238,11 +235,12 @@ impl GeneralizedAlphaSolver {
             DR_diag,
             DL,
             DR,
+            is_dynamic_solve,
         }
     }
 
-    pub fn step(&mut self, elem: &mut Element) -> Option<Vec<f64>> {
-        let mut res_norm: Vec<f64> = Vec::new();
+    pub fn step(&mut self, elem: &mut Element) -> Option<Vec<IterData>> {
+        let mut iter_data: Vec<IterData> = Vec::new();
 
         // Number of degrees of freedom
         let num_node_dofs = self.num_state_nodes * 6;
@@ -258,11 +256,16 @@ impl GeneralizedAlphaSolver {
 
         // Convergence iterations
         for i in 0..50 {
-            // Get predicted state and apply to element
-            let Q: Matrix7xX = state_next.Q();
-            let V: Matrix6xX = state_next.V();
-            let A: Matrix6xX = state_next.A();
-            elem.update_states(&Q, &V, &A, &self.gravity);
+            // Get predicted displacements
+            let mut q: Matrix7xX = state_next.q();
+
+            // If no constraints, prescribe the root displacement on node 1
+            if self.num_constraint_nodes == 0 {
+                q.column_mut(0).copy_from(&elem.q_root);
+            }
+
+            // Update state in element
+            elem.update_states(&q, &state_next.v, &state_next.vd, &self.gravity);
 
             // Get element residual vector, stiffness, damping, and mass matrices
             let R_FE: VectorD = elem.R_FE();
@@ -283,13 +286,19 @@ impl GeneralizedAlphaSolver {
             // Assemble iteration matrix
             self.St.fill(0.);
             // Quadrant 1,1
-            self.St
-                .view_mut((0, 0), (num_node_dofs, num_node_dofs))
-                .add_assign(
-                    M * state_next.cfg.beta_prime
-                        + G * state_next.cfg.gamma_prime
-                        + (K_FE + K_C) * &T,
-                );
+            if self.is_dynamic_solve {
+                self.St
+                    .view_mut((0, 0), (num_node_dofs, num_node_dofs))
+                    .add_assign(
+                        M * state_next.cfg.beta_prime
+                            + G * state_next.cfg.gamma_prime
+                            + (K_FE + K_C) * &T,
+                    );
+            } else {
+                self.St
+                    .view_mut((0, 0), (num_node_dofs, num_node_dofs))
+                    .add_assign((K_FE + K_C) * &T);
+            }
 
             // If there are constraint nodes
             if self.num_constraint_nodes > 0 {
@@ -322,17 +331,24 @@ impl GeneralizedAlphaSolver {
             let St: MatrixD = &self.DL * &self.St * &self.DR;
             let R: VectorD = self.R.component_mul(&self.DL_diag);
 
-            let mut x = VectorD::zeros(num_node_dofs);
             // Solve system
+            let mut x: VectorD = VectorD::zeros(num_node_dofs);
             if num_constraint_dofs == 0 {
+                let reduced_dofs = num_node_dofs - 6;
                 let xx: VectorD = St
-                    .view((6, 6), (num_node_dofs - 6, num_node_dofs - 6))
+                    .view((6, 6), (reduced_dofs, reduced_dofs))
                     .lu()
-                    .solve(&R.rows(6, num_node_dofs - 6))
+                    .solve(&R.rows(6, reduced_dofs))
                     .expect("Matrix is not invertable");
-                x.rows_mut(6, num_node_dofs - 6).copy_from(&xx);
+                x.rows_mut(6, reduced_dofs).copy_from(&xx);
             } else {
                 x = St.lu().solve(&R).expect("Matrix is not invertable");
+            }
+
+            // If the solution contains NaNs, return
+            if x.iter().any(|&v| v.is_nan()) {
+                print!("NaNs in solve\n");
+                return None;
             }
 
             // Un-condition the solution vector
@@ -344,22 +360,44 @@ impl GeneralizedAlphaSolver {
             let lambda_delta: VectorD = x.rows(num_node_dofs, num_constraint_dofs).clone_owned();
 
             // update state and lambda
-            state_next.update(&delta_x);
-            lambda += lambda_delta;
+            if self.is_dynamic_solve {
+                state_next.update_dynamic(&delta_x);
+            } else {
+                state_next.update_static(&delta_x);
+            }
+
+            // Update constraints
+            if num_constraint_dofs > 0 {
+                lambda += lambda_delta;
+            }
 
             // Check for convergence
             let energy_increment = self.R.dot(&x).abs();
-            res_norm.push(energy_increment);
+            iter_data.push(IterData {
+                energy_inc: energy_increment,
+                residual: self.R.clone(),
+                x: x.clone(),
+            });
             if i == 0 {
                 energy_increment_ref = energy_increment;
             }
-            if energy_increment < 1e-8 || (energy_increment / energy_increment_ref < 1e-5) {
+            let energy_ratio = energy_increment / energy_increment_ref;
+            if energy_increment < 1e-8 || energy_ratio < 1e-5 {
                 state_next.update_algorithmic_acceleration();
                 self.state = state_next;
-                return Some(res_norm);
+                return Some(iter_data);
             }
         }
         // Solution did not converge
+        // state_next.update_algorithmic_acceleration();
+        // self.state = state_next;
+        // Some(iter_data)
         None
     }
+}
+
+pub struct IterData {
+    pub energy_inc: f64,
+    pub residual: VectorD,
+    pub x: VectorD,
 }

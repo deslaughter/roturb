@@ -135,6 +135,10 @@ fn test_static_element() {
 
     let step_config = StepConfig::new(1.0, 1.0);
 
+    let gravity: Vector3 = Vector3::zeros();
+
+    let is_dynamic_solve = false;
+
     //--------------------------------------------------------------------------
     // Test solve of element with no initial displacement
     //--------------------------------------------------------------------------
@@ -143,7 +147,8 @@ fn test_static_element() {
     let state0: State = State::new(&step_config, elem.nodes.num, 0.);
 
     // Create generalized alpha solver
-    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
+    let mut solver =
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
 
     // Solve time step
     let errors = solver.step(&mut elem).expect("solution failed to converge");
@@ -164,7 +169,8 @@ fn test_static_element() {
     let state0: State = State::new_with_initial_state(&step_config, elem.nodes.num, 0., &Q, &V, &A);
 
     // Create generalized alpha solver
-    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
+    let mut solver =
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
 
     // Solve time step
     let errors = solver.step(&mut elem).expect("solution failed to converge");
@@ -178,7 +184,8 @@ fn test_static_element() {
     let state0: State = State::new(&step_config, elem.nodes.num, 0.);
 
     // Create generalized alpha solver
-    let mut solver = GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, Vector3::zeros());
+    let mut solver =
+        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
 
     // Create force matrix, apply 150 lbs force in z direction of last node
     let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
@@ -191,7 +198,7 @@ fn test_static_element() {
     assert_eq!(errors.len(), 5);
 
     // Verify end node displacement in xyz
-    let q = solver.state.Q();
+    let q = solver.state.q();
     assert_relative_eq!(
         Vector3::from(q.fixed_view::<3, 1>(0, num_nodes - 1)),
         Vector3::new(
