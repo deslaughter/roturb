@@ -194,11 +194,15 @@ mod test_legendre {
 //------------------------------------------------------------------------------
 
 pub fn gauss_legendre_lobotto_points(order: usize) -> Vec<f64> {
+    gauss_legendre_lobotto_quadrature(order).0
+}
+
+pub fn gauss_legendre_lobotto_quadrature(order: usize) -> (Vec<f64>, Vec<f64>) {
     let n = order + 1;
     let n_2 = n / 2;
     let nf = n as f64;
     let mut x = vec![0.0; n];
-    // let mut w = vec![0.0; n];
+    let mut w = vec![0.0; n];
     x[0] = -1.;
     x[n - 1] = 1.;
     for i in 1..n_2 {
@@ -215,14 +219,14 @@ pub fn gauss_legendre_lobotto_points(order: usize) -> Vec<f64> {
         }
         x[i] = -xi;
         x[n - i - 1] = xi;
-        // w[i] = 2. / (nf * (nf - 1.) * legendre_polynomial(n - 1, x[i]).powi(2));
-        // w[n - i - 1] = w[i];
+        w[i] = 2. / (nf * (nf - 1.) * legendre_polynomial(n - 1, x[i]).powi(2));
+        w[n - i - 1] = w[i];
     }
     if n % 2 != 0 {
         x[n_2] = 0.;
-        // w[n_2] = 2.0 / ((nf * (nf - 1.)) * legendre_polynomial(n - 1, x[n_2]).powi(2));
+        w[n_2] = 2.0 / ((nf * (nf - 1.)) * legendre_polynomial(n - 1, x[n_2]).powi(2));
     }
-    x
+    (x, w)
 }
 
 #[cfg(test)]
