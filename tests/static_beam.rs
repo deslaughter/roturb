@@ -1,9 +1,11 @@
 #![allow(non_snake_case)]
 
+use std::ops::Sub;
+
 use approx::assert_relative_eq;
 use roturb::{
     element::{
-        gebt::{Material, Nodes, Section},
+        gebt::{Element, Material, Nodes, Section},
         interp::{
             gauss_legendre_lobotto_points, lagrange_polynomial_derivative,
             quaternion_from_tangent_twist,
@@ -208,4 +210,179 @@ fn test_static_element() {
         ),
         epsilon = 1e-6
     )
+}
+
+#[test]
+fn test_static_beam_curl() {
+    //--------------------------------------------------------------------------
+    // Initial configuration
+    //--------------------------------------------------------------------------
+
+    // Node locations
+    let s = VectorN::from_vec((0..21).into_iter().map(|v| (v as f64) / 20.).collect_vec());
+    let xi: VectorN = (2. * (s.add_scalar(-s.min())) / (s.max() - s.min())).add_scalar(-1.);
+    let num_nodes = s.len();
+
+    // Quadrature rule
+    let gq = Quadrature::gauss(20);
+
+    // Node initial position
+    let x0: Matrix3xX =
+        Matrix3xX::from_iterator(num_nodes, s.iter().flat_map(|&si| vec![10. * si, 0., 0.]));
+
+    // Node initial rotation
+    let r0: Matrix4xX = Matrix4xX::from_columns(
+        &s.iter()
+            .map(|&si| Vector4::new(1., 0., 0., 0.))
+            .collect_vec(),
+    );
+
+    //--------------------------------------------------------------------------
+    // Displacements and rotations from reference
+    //--------------------------------------------------------------------------
+
+    // Get xyz displacements at node locations
+    let u: Matrix3xX = Matrix3xX::zeros(s.len());
+
+    // Get matrix describing the nodal rotation
+    let r: Matrix4xX = Matrix4xX::from_columns(
+        &s.iter()
+            .map(|&si| Vector4::new(1., 0., 0., 0.))
+            .collect_vec(),
+    );
+
+    //--------------------------------------------------------------------------
+    // Material
+    //--------------------------------------------------------------------------
+
+    // Create material
+    let mat = Material {
+        M_star: Matrix6::zeros(),
+        C_star: Matrix6::from_row_slice(&vec![
+            1770.0e3, 0., 0., 0., 0., 0., // row 1
+            0., 1770.0e3, 0., 0., 0., 0., // row 2
+            0., 0., 1770.0e3, 0., 0., 0., // row 3
+            0., 0., 0., 8.16e3, 0., 0., // row 4
+            0., 0., 0., 0., 86.9e3, 0., // row 5
+            0., 0., 0., 0., 0., 215.0e3, // row 6
+        ]),
+    };
+
+    // Create sections
+    let sections: Vec<Section> = vec![Section::new(0.0, &mat), Section::new(1.0, &mat)];
+
+    //--------------------------------------------------------------------------
+    // Create element
+    //--------------------------------------------------------------------------
+
+    // Create nodes structure
+    let nodes = Nodes::new(&s, &xi, &x0, &r0);
+
+    // Create element from nodes
+    let mut elem = nodes.element(&gq, &sections);
+
+    //--------------------------------------------------------------------------
+    // Step configuration
+    //--------------------------------------------------------------------------
+
+    let step_config = StepConfig::new(1.0, 1.0);
+    let gravity: Vector3 = Vector3::zeros();
+    let is_dynamic_solve = false;
+
+    //--------------------------------------------------------------------------
+    // Test solve of element with applied load
+    //--------------------------------------------------------------------------
+
+    // Create initial state
+    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
+
+    // Create generalized alpha solver
+    let mut solver =
+        GeneralizedAlphaSolver::new(elem.nodes.num, 0, &state0, gravity, is_dynamic_solve);
+
+    // Create force matrix, apply 150 lbs force in z direction of last node
+    let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
+
+    // Create list of moments to apply to end of beam
+    let Mz = vec![0., 10920.0, 21840.0, 32761.0, 43681.0, 54601.0];
+
+    // Create empty iter directory
+    let _ = std::fs::remove_dir_all("iter");
+    std::fs::create_dir("iter").unwrap();
+
+    // Loop through moments
+    for (i, &m) in Mz.iter().enumerate() {
+        forces[(4, num_nodes - 1)] = -m;
+        elem.apply_force(&forces);
+        let iter_data = solver.step(&mut elem).expect("solution failed to converge");
+        let q = solver.state.q();
+        println!("Mz={}, niter={}", m, iter_data.len());
+        let vtk = element_vtk(&elem);
+        vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
+            .unwrap();
+    }
+}
+
+use vtkio::model::*; // import model definition of a VTK file
+
+fn element_vtk(elem: &Element) -> Vtk {
+    let rotations: Vec<Matrix3> = elem
+        .nodes
+        .r0
+        .column_iter()
+        .zip(elem.nodes.r.column_iter())
+        .map(|(r0, r)| {
+            (r0.clone_owned().as_unit_quaternion() * r.clone_owned().as_unit_quaternion())
+                .to_rotation_matrix()
+                .matrix()
+                .clone_owned()
+        })
+        .collect_vec();
+    let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
+
+    Vtk {
+        version: Version { major: 4, minor: 2 },
+        title: String::new(),
+        byte_order: ByteOrder::LittleEndian,
+        file_path: None,
+        data: DataSet::inline(UnstructuredGridPiece {
+            points: IOBuffer::F64((&elem.nodes.u + &elem.nodes.x0).as_slice().to_vec()),
+            cells: Cells {
+                cell_verts: VertexNumbers::XML {
+                    connectivity: {
+                        let mut a = vec![0, elem.nodes.num - 1];
+                        let b = (1..elem.nodes.num - 1).collect_vec();
+                        a.extend(b);
+                        a.iter().map(|&i| i as u64).collect_vec()
+                    },
+                    offsets: vec![elem.nodes.num as u64],
+                },
+                types: vec![CellType::LagrangeCurve],
+            },
+            data: Attributes {
+                point: orientations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &orientation)| {
+                        Attribute::DataArray(DataArrayBase {
+                            name: orientation.to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                rotations
+                                    .iter()
+                                    .flat_map(|r| {
+                                        r.column(i)
+                                            .iter()
+                                            .map(|&v| ((v * 1.0e7).round() / 1.0e7) as f32)
+                                            .collect_vec()
+                                    })
+                                    .collect_vec(),
+                            ),
+                        })
+                    })
+                    .collect_vec(),
+                ..Default::default()
+            },
+        }),
+    }
 }
