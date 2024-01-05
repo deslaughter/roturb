@@ -9,5 +9,7 @@ edition = "2021"
 approx = "0.5.1"
 gauss-quad = "0.1.7"
 itertools = "0.12.0"
-nalgebra = "0.32.3"
+serde = "1.0.194"
+serde_json = "1.0.111"
+nalgebra = {version="0.32.3", features=["serde-serialize"]}
 vtkio = "0.6.3"

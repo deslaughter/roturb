@@ -267,6 +267,9 @@ impl GeneralizedAlphaSolver {
             // Update state in element
             elem.update_states(&q, &state_next.v, &state_next.vd, &self.gravity);
 
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_elem.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, elem).expect("fail");
+
             // Get element residual vector, stiffness, damping, and mass matrices
             let R_FE: VectorD = elem.R_FE();
             let K_FE: MatrixD = elem.K_FE();
@@ -389,10 +392,10 @@ impl GeneralizedAlphaSolver {
             }
         }
         // Solution did not converge
-        // state_next.update_algorithmic_acceleration();
-        // self.state = state_next;
-        // Some(iter_data)
-        None
+        state_next.update_algorithmic_acceleration();
+        self.state = state_next;
+        Some(iter_data)
+        // None
     }
 }
 

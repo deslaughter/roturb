@@ -1,18 +1,18 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-use crate::prelude::*;
-
 use super::{
     interp::{lagrange_polynomial, lagrange_polynomial_derivative},
     quadrature::Quadrature,
 };
+use crate::prelude::*;
+use serde::Serialize;
 
 //------------------------------------------------------------------------------
 // Element
 //------------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Element {
     pub q_root: Vector7,
     pub nodes: Nodes,
@@ -187,23 +187,25 @@ impl Element {
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
+            .as_unit_quaternion();
         // Node 1 rotation as unit quaternions
         let n1_r = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
+            .as_unit_quaternion();
+        let diff_r = (root_r.inverse() * n1_r).scaled_axis();
         Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            n1_r[0] - root_r[0],
-            n1_r[1] - root_r[1],
-            n1_r[2] - root_r[2],
+            diff_r[0],
+            diff_r[1],
+            diff_r[2],
+            // n1_r[0] - root_r[0],
+            // n1_r[1] - root_r[1],
+            // n1_r[2] - root_r[2],
         )
     }
 
@@ -218,7 +220,7 @@ impl Element {
 // Nodes
 //------------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Nodes {
     pub num: usize,
     pub s: VectorN,
@@ -369,7 +371,7 @@ impl Nodes {
 //------------------------------------------------------------------------------
 
 // QuadraturePoint defines the quadrature point data in the reference configuration
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct QuadraturePoint {
     xi: f64,
     x0: Vector3,
@@ -1086,7 +1088,7 @@ mod tests {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Section {
     pub s: f64,             // Distance along centerline from first point
     pub material: Material, // Material specification
@@ -1101,7 +1103,7 @@ impl Section {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Material {
     pub M_star: Matrix6, // Mass matrix
     pub C_star: Matrix6, // Stiffness matrix
