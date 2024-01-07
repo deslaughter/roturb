@@ -228,7 +228,7 @@ fn test_rotating_beam() {
     let h: f64 = 0.005;
     let omega = 8.; // rad/s
     let is_dynamic_solve = true;
-    let num_constraint_nodes = 1;
+    let num_constraint_nodes = 0;
 
     let mut elem = build_element();
 
