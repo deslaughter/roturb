@@ -71,19 +71,7 @@ fn test_static_element() {
         }
     };
     let uz = |t: f64| -> f64 { scale * (t * t + 0.2 * t * t * t) };
-    let rot = |t: f64| -> Matrix3 {
-        Matrix3::new(
-            1.,
-            0.,
-            0.,
-            0.,
-            (scale * t).cos(),
-            -(scale * t).sin(),
-            0.,
-            (scale * t).sin(),
-            (scale * t).cos(),
-        )
-    };
+    let rot = |t: f64| -> UnitQuaternion { UnitQuaternion::from_euler_angles(scale * t, 0., 0.) };
 
     // Get xyz displacements at node locations
     let u: Matrix3xX = Matrix3xX::from_iterator(
@@ -92,11 +80,7 @@ fn test_static_element() {
     );
 
     // Get matrix describing the nodal rotation
-    let r: Matrix4xX = Matrix4xX::from_columns(
-        &s.iter()
-            .map(|&si| UnitQuaternion::from_matrix(&rot(si)).wijk())
-            .collect_vec(),
-    );
+    let r: Matrix4xX = Matrix4xX::from_columns(&s.iter().map(|&si| rot(si).wijk()).collect_vec());
 
     //--------------------------------------------------------------------------
     // Material
@@ -214,42 +198,40 @@ fn test_static_element() {
 
 #[test]
 fn test_static_beam_curl() {
+    let num_constraint_nodes = 1;
+    let is_dynamic_solve = false;
+
+    // Create list of moments to apply to end of beam
+    let Mz = vec![0., 10920.0, 21840.0, 32761.0, 43681.0, 54601.0];
+
     //--------------------------------------------------------------------------
     // Initial configuration
     //--------------------------------------------------------------------------
 
     // Node locations
-    let s = VectorN::from_vec((0..21).into_iter().map(|v| (v as f64) / 20.).collect_vec());
+    let num_nodes = 21;
+    let s: VectorN = VectorN::from_vec(
+        (0..num_nodes)
+            .into_iter()
+            .map(|v| (v as f64) / ((num_nodes - 1) as f64))
+            .collect_vec(),
+    );
     let xi: VectorN = (2. * (s.add_scalar(-s.min())) / (s.max() - s.min())).add_scalar(-1.);
-    let num_nodes = s.len();
 
     // Quadrature rule
-    let gq = Quadrature::gauss(20);
+    let gq = Quadrature::gauss(30);
+    // let gq = Quadrature::gauss_legendre_lobotto(10);
 
     // Node initial position
-    let x0: Matrix3xX =
-        Matrix3xX::from_iterator(num_nodes, s.iter().flat_map(|&si| vec![10. * si, 0., 0.]));
+    let x0: Matrix3xX = Matrix3xX::from_column_slice(
+        &s.iter()
+            .flat_map(|&si| vec![10. * si, 0., 0.])
+            .collect_vec(),
+    );
 
     // Node initial rotation
-    let r0: Matrix4xX = Matrix4xX::from_columns(
-        &s.iter()
-            .map(|&si| Vector4::new(1., 0., 0., 0.))
-            .collect_vec(),
-    );
-
-    //--------------------------------------------------------------------------
-    // Displacements and rotations from reference
-    //--------------------------------------------------------------------------
-
-    // Get xyz displacements at node locations
-    let u: Matrix3xX = Matrix3xX::zeros(s.len());
-
-    // Get matrix describing the nodal rotation
-    let r: Matrix4xX = Matrix4xX::from_columns(
-        &s.iter()
-            .map(|&si| Vector4::new(1., 0., 0., 0.))
-            .collect_vec(),
-    );
+    let r0: Matrix4xX =
+        Matrix4xX::from_column_slice(&s.iter().flat_map(|&si| vec![1., 0., 0., 0.]).collect_vec());
 
     //--------------------------------------------------------------------------
     // Material
@@ -287,7 +269,6 @@ fn test_static_beam_curl() {
 
     let step_config = StepConfig::new(1.0, 1.0);
     let gravity: Vector3 = Vector3::zeros();
-    let is_dynamic_solve = false;
 
     //--------------------------------------------------------------------------
     // Test solve of element with applied load
@@ -297,14 +278,16 @@ fn test_static_beam_curl() {
     let state0: State = State::new(&step_config, elem.nodes.num, 0.);
 
     // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 0, &state0, gravity, is_dynamic_solve);
+    let mut solver = GeneralizedAlphaSolver::new(
+        elem.nodes.num,
+        num_constraint_nodes,
+        &state0,
+        gravity,
+        is_dynamic_solve,
+    );
 
     // Create force matrix, apply 150 lbs force in z direction of last node
     let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
-
-    // Create list of moments to apply to end of beam
-    let Mz = vec![0., 10920.0, 21840.0, 32761.0, 43681.0, 54601.0];
 
     // Create empty iter directory
     let _ = std::fs::remove_dir_all("iter");
@@ -315,8 +298,7 @@ fn test_static_beam_curl() {
         forces[(4, num_nodes - 1)] = -m;
         elem.apply_force(&forces);
         let iter_data = solver.step(&mut elem).expect("solution failed to converge");
-        let q = solver.state.q();
-        println!("Mz={}, niter={}", m, iter_data.len());
+        println!("Mz={:6}, niter={}", m, iter_data.len());
         let vtk = element_vtk(&elem);
         vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
             .unwrap();

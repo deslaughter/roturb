@@ -13,9 +13,13 @@ use roturb::{
 };
 
 fn build_element() -> Element {
-    let xi: VectorN = VectorN::from_vec(gauss_legendre_lobotto_points(4));
+    let xi: VectorN = VectorN::from_vec(gauss_legendre_lobotto_points(5));
     let s: VectorN = xi.add_scalar(1.) / 2.;
     let num_nodes = s.len();
+
+    // Quadrature rule
+    // let gq = Quadrature::gauss(7);
+    let gq = Quadrature::gauss_legendre_lobotto(10); // Nodal quadrature
 
     // Node initial position and rotation
     let fx = |s: f64| -> f64 { 10. * s };
@@ -55,10 +59,6 @@ fn build_element() -> Element {
 
     // Create nodes structure
     let nodes = Nodes::new(&s, &xi, &x0, &r0);
-
-    // Quadrature rule
-    let gq = Quadrature::gauss(7);
-    // let gq = Quadrature::gauss_legendre_lobotto(5); // Nodal quadrature
 
     // Create element from nodes
     nodes.element(&gq, &sections)
@@ -224,14 +224,17 @@ fn test_rotating_beam() {
     // Solver parameters
     let rho_inf: f64 = 0.0;
     let t0: f64 = 0.;
-    let tf: f64 = 20.;
+    let tf: f64 = 2.;
     let h: f64 = 0.005;
+    let omega = 8.; // rad/s
+    let is_dynamic_solve = true;
+    let num_constraint_nodes = 1;
 
     let mut elem = build_element();
 
     // let rot0 = PI;
     let rot0 = 0.;
-    let r0: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rot0);
+    let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot0));
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -242,7 +245,6 @@ fn test_rotating_beam() {
 
     // Number of state and constraint nodes
     let num_state_nodes = elem.nodes.num;
-    let num_constraint_nodes = 0;
 
     // Create generalized alpha step configuration
     let step_config: StepConfig = StepConfig::new(rho_inf, h);
@@ -265,15 +267,13 @@ fn test_rotating_beam() {
         num_constraint_nodes,
         &state0,
         gravity,
-        true,
+        is_dynamic_solve,
     );
 
     // Create vector to store iteration states
     let mut states: Vec<State> = vec![solver.state.clone()];
 
     let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
-    let _ = std::fs::remove_dir_all("vtk");
-    std::fs::create_dir("vtk").unwrap();
     let _ = std::fs::remove_dir_all("iter");
     std::fs::create_dir("iter").unwrap();
 
@@ -283,22 +283,9 @@ fn test_rotating_beam() {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
-        let rotz = 0.5 * (t + h) + rot0;
-        let r: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rotz);
+        let rotz = omega * (t + h) + rot0;
+        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rotz));
         elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
-
-        // Replace solver state
-        // let rotz = 0.5 * t + rot0;
-        // let r: UnitQuaternion = UnitQuaternion::from_euler_angles(0., 0., rotz);
-        // let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
-        // for (i, mut c) in Q.column_iter_mut().enumerate() {
-        //     c.rows_mut(0, 3)
-        //         .copy_from(&(r * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
-        //     c.rows_mut(3, 4).copy_from(&r.wijk());
-        // }
-        // let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        // let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        // solver.state = State::new_with_initial_state(&step_config, num_state_nodes, t, &Q, &V, &A);
 
         // Solve time step
         match solver.step(&mut elem) {
@@ -316,26 +303,28 @@ fn test_rotating_beam() {
                     rotz
                 );
                 states.push(solver.state.clone());
-                file.write_fmt(format_args!("{:?}", t)).expect("fail");
-                file.write_fmt(format_args!(",{:?}", iter_data.len()))
-                    .expect("fail");
-                for &v in solver.state.q().iter() {
-                    file.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                }
-                file.write_all(b"\n").expect("fail");
+
+                // file.write_fmt(format_args!("{:?}", t)).expect("fail");
+                // file.write_fmt(format_args!(",{:?}", iter_data.len()))
+                //     .expect("fail");
+                // for &v in solver.state.q().iter() {
+                //     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                // }
+                // file.write_all(b"\n").expect("fail");
 
                 let vtk = element_vtk(&elem);
-                vtk.export_ascii(format!("vtk/step_{:0>3}.vtk", i)).unwrap();
+                vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
+                    .unwrap();
 
-                let mut f =
-                    std::fs::File::create(format!("iter/step_{:0>3}_conv_x.csv", i)).unwrap();
-                for (i, idata) in iter_data.iter().enumerate() {
-                    f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
-                    for &v in idata.x.iter() {
-                        f.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                    }
-                    f.write_all(b"\n").expect("fail");
-                }
+                // let mut f =
+                //     std::fs::File::create(format!("iter/step_{:0>3}_conv_x.csv", i)).unwrap();
+                // for (i, idata) in iter_data.iter().enumerate() {
+                //     f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
+                //     for &v in idata.x.iter() {
+                //         f.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                //     }
+                //     f.write_all(b"\n").expect("fail");
+                // }
             }
         }
     }

@@ -90,13 +90,11 @@ impl Element {
                     let phi_prime_i = self.shape_func_deriv[(i, sl)];
                     let phi_prime_j = self.shape_func_deriv[(j, sl)];
                     let J = self.jacobian[sl];
-                    Kij.add_assign(
-                        qp.weight
-                            * (phi_i * qp.Puu * phi_prime_j
-                                + phi_i * qp.Quu * phi_j * J
-                                + phi_prime_i * qp.Cuu * phi_prime_j / J
-                                + phi_prime_i * qp.Ouu * phi_j),
-                    );
+                    Kij += qp.weight
+                        * (phi_i * qp.Puu * phi_prime_j
+                            + phi_i * qp.Quu * phi_j * J
+                            + phi_prime_i * qp.Cuu * phi_prime_j / J
+                            + phi_prime_i * qp.Ouu * phi_j);
                 }
             }
         }
@@ -123,13 +121,14 @@ impl Element {
                 for (sl, qp) in self.qps.iter().enumerate() {
                     let phi_i = self.shape_func_interp[(i, sl)];
                     let phi_j = self.shape_func_interp[(j, sl)];
-                    Mij.add_assign(qp.weight * phi_i * mats[sl] * phi_j * self.jacobian[sl]);
+                    Mij += qp.weight * phi_i * mats[sl] * phi_j * self.jacobian[sl];
                 }
             }
         }
         M
     }
 
+    /// Nodal residual force vector
     pub fn R_FE(&self) -> VectorD {
         let F_E = self.F_E();
         let F_I = self.F_I();
@@ -155,17 +154,17 @@ impl Element {
 
     /// Gravity nodal force vector
     pub fn F_g(&self) -> VectorD {
-        self.integrate_vectors(self.qps.iter().map(|qp| qp.F_G).collect_vec().as_slice())
+        self.integrate_vectors(&self.qps.iter().map(|qp| qp.F_G).collect_vec())
     }
 
     /// Inertial nodal force vector
     pub fn F_I(&self) -> VectorD {
-        self.integrate_vectors(self.qps.iter().map(|qp| qp.F_I).collect_vec().as_slice())
+        self.integrate_vectors(&self.qps.iter().map(|qp| qp.F_I).collect_vec())
     }
 
     /// External nodal force vector
     pub fn F_ext(&self) -> VectorD {
-        self.integrate_vectors(self.qps.iter().map(|qp| qp.F_ext).collect_vec().as_slice())
+        self.integrate_vectors(&self.qps.iter().map(|qp| qp.F_ext).collect_vec())
             + VectorD::from_column_slice(self.nodes.F.as_slice())
     }
 
@@ -187,25 +186,27 @@ impl Element {
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion();
+            .as_unit_quaternion()
+            .scaled_axis();
         // Node 1 rotation as unit quaternions
         let n1_r = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion();
-        let diff_r = (root_r.inverse() * n1_r).scaled_axis();
+            .as_unit_quaternion()
+            .scaled_axis();
+        // let diff_r = (root_r.inverse() * n1_r).scaled_axis();
         Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            diff_r[0],
-            diff_r[1],
-            diff_r[2],
-            // n1_r[0] - root_r[0],
-            // n1_r[1] - root_r[1],
-            // n1_r[2] - root_r[2],
+            n1_r[0] - root_r[0],
+            n1_r[1] - root_r[1],
+            n1_r[2] - root_r[2],
+            // diff_r[0],
+            // diff_r[1],
+            // diff_r[2],
         )
     }
 
@@ -446,7 +447,7 @@ impl QuadraturePoint {
 
         // Calculate 6x6 rotation matrix
         self.RR0 = (R * self.R0).to_rotation_matrix();
-        let mut RR0e: Matrix6 = Matrix6::from_element(0.);
+        let mut RR0e: Matrix6 = Matrix6::zeros();
         RR0e.fixed_view_mut::<3, 3>(0, 0)
             .copy_from(self.RR0.matrix());
         RR0e.fixed_view_mut::<3, 3>(3, 3)
@@ -477,9 +478,17 @@ impl QuadraturePoint {
         let C12 = self.Cuu.fixed_view::<3, 3>(0, 3);
 
         // Sectional strain
-        let Rm: Matrix3 = R.to_rotation_matrix().matrix().clone_owned();
-        let e1: Vector3 = self.x0_prime + u_prime - Rm * self.x0_prime;
-        let e2: Vector3 = 2. * R.F() * Vector4::new(R_prime.w, R_prime.i, R_prime.j, R_prime.k); // kappa
+        let e1: Vector3 = self.x0_prime + u_prime - R * self.x0_prime;
+        let e2: Vector3 = 2. * R.E() * R_prime.wijk();
+        // let e1: Vector3 = self.x0_prime + u_prime - self.RR0.matrix().column(0);
+        // let R_prime_Rt = R.to_rotation_matrix()
+        //     * (2. * R.G() * R_prime.G().transpose())
+        //     * R.to_rotation_matrix().transpose();
+        // let e2 = Vector3::new(
+        //     R_prime_Rt[(2, 1)] - R_prime_Rt[(1, 2)],
+        //     R_prime_Rt[(0, 2)] - R_prime_Rt[(2, 0)],
+        //     R_prime_Rt[(1, 0)] - R_prime_Rt[(0, 1)],
+        // ) / 2.;
         self.strain = Vector6::new(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2]);
 
         // Calculate skew_symmetric_matrix(x0_prime + u_prime)
