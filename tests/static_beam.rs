@@ -293,16 +293,35 @@ fn test_static_beam_curl() {
     let _ = std::fs::remove_dir_all("iter");
     std::fs::create_dir("iter").unwrap();
 
+    let mut u_tip: Matrix3xX = Matrix3xX::zeros(Mz.len());
+
     // Loop through moments
     for (i, &m) in Mz.iter().enumerate() {
         forces[(4, num_nodes - 1)] = -m;
         elem.apply_force(&forces);
         let iter_data = solver.step(&mut elem).expect("solution failed to converge");
         println!("Mz={:6}, niter={}", m, iter_data.len());
+        let q = solver.state.q();
+        u_tip
+            .column_mut(i)
+            .copy_from(&q.fixed_view::<3, 1>(0, q.ncols() - 1));
         let vtk = element_vtk(&elem);
         vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
             .unwrap();
     }
+
+    assert_relative_eq!(
+        u_tip,
+        Matrix3xX::from_column_slice(&vec![
+            0., 0., 0., // column 1
+            -2.4317, 0., 5.4987, // column 2
+            -7.6613, 0., 7.1978, // column 3
+            -11.5591, 0., 4.7986, // column 4
+            -11.8921, 0., 1.3747, // column 5
+            -10.0000, 0., 0.0000, // column 6
+        ]),
+        epsilon = 1.0e-3
+    )
 }
 
 use vtkio::model::*; // import model definition of a VTK file
