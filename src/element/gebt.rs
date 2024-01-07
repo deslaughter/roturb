@@ -55,7 +55,7 @@ impl Element {
         let omega_dot: Matrix3xX = interp_position(&self.shape_func_interp, &self.nodes.omega_dot);
 
         // Calculate quadrature point values with applied displacement/rotation
-        for (i, qp) in self.qps.iter_mut().enumerate() {
+        self.qps.iter_mut().enumerate().for_each(|(i, qp)| {
             qp.update_states(
                 &Vector3::from(u.column(i)),
                 &Vector3::from(u_prime.column(i)),
@@ -67,7 +67,7 @@ impl Element {
                 &Vector3::from(omega_dot.column(i)),
                 g,
             )
-        }
+        });
     }
 
     pub fn apply_force(&mut self, forces: &Matrix6xX) {
@@ -313,7 +313,7 @@ impl Nodes {
         // Get derivative of node positions wrt xi at the quadrature points
         let qp_deriv: Matrix3xX = &self.x0 * &shape_func_deriv;
 
-        // Calculate Jacobian matrix
+        // Calculate Jacobian Vector
         let jacobian: Matrix1xX =
             Matrix1xX::from_iterator(qp_xi.len(), qp_deriv.column_iter().map(|r| r.norm()));
 
@@ -321,39 +321,25 @@ impl Nodes {
         let qp_x0: Matrix3xX = interp_position(&shape_func_interp, &self.x0);
         let qp_r0: Matrix4xX = interp_rotation(&shape_func_interp, &self.r0);
 
-        // Convert rotation matrix to unit quaternions
-        let qp_R0: Vec<UnitQuaternion> = qp_r0
-            .column_iter()
-            .map(|r| Vector4::from(r).as_unit_quaternion())
-            .collect();
-
         // Calculate the tangent vector of the position at each quadrature point
         let qp_x0_prime: Matrix3xX =
             interp_position_derivative(&shape_func_deriv, &jacobian, &self.x0);
 
-        let qps: Vec<QuadraturePoint> = izip!(
-            qp_xi.iter(),
-            qp_x0.column_iter(),
-            qp_x0_prime.column_iter(),
-            qp_R0.iter(),
-            qp_mass.iter(),
-            qp_stiffness.iter(),
-            qp_weights.iter(),
-        )
-        .map(
-            |(&xi, x0, x0p, &R0, &M_star, &C_star, &w)| QuadraturePoint {
+        let qps: Vec<QuadraturePoint> = qp_xi
+            .iter()
+            .enumerate()
+            .map(|(i, &xi)| QuadraturePoint {
                 xi,
-                x0: x0.into(),
-                x0_prime: x0p.into(),
-                R0,
-                M_star,
-                C_star,
-                weight: w,
+                x0: qp_x0.column(i).clone_owned(),
+                x0_prime: qp_x0_prime.column(i).clone_owned(),
+                R0: qp_r0.column(i).clone_owned().as_unit_quaternion(),
+                M_star: qp_mass[i],
+                C_star: qp_stiffness[i],
+                weight: qp_weights[i],
                 F_ext: Vector6::zeros(),
                 ..Default::default()
-            },
-        )
-        .collect();
+            })
+            .collect();
 
         // Build and return element
         Element {
