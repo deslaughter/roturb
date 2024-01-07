@@ -98,16 +98,55 @@ impl RotVecExt for Vector3 {
 }
 
 pub trait QuatExt {
-    fn F(&self) -> Matrix3x4;
+    fn E(&self) -> Matrix3x4;
+    fn G(&self) -> Matrix3x4;
     fn wijk(&self) -> Vector4;
 }
 
 impl QuatExt for UnitQuaternion {
-    fn F(&self) -> Matrix3x4 {
+    fn E(&self) -> Matrix3x4 {
         let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
-        Matrix3x4::new(-q1, q0, -q3, q2, -q2, q3, q0, -q1, -q3, -q2, q1, q0)
+        Matrix3x4::new(
+            -q1, q0, -q3, q2, // row 1
+            -q2, q3, q0, -q1, // row 2
+            -q3, -q2, q1, q0, // row 3
+        )
+    }
+    fn G(&self) -> Matrix3x4 {
+        let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
+        Matrix3x4::new(
+            -q1, q0, q3, -q2, // row 1
+            -q2, -q3, q0, q1, // row 2
+            -q3, q2, -q1, q0, // row 3
+        )
     }
     fn wijk(&self) -> Vector4 {
-        Vector4::new(self.w, self.i, self.j, self.k)
+        let mut q0 = self.w;
+        let mut q = self.vector();
+        Vector4::new(q0, q[0], q[1], q[2])
+    }
+}
+
+impl QuatExt for Quaternion {
+    fn E(&self) -> Matrix3x4 {
+        let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
+        Matrix3x4::new(
+            -q1, q0, -q3, q2, // row 1
+            -q2, q3, q0, -q1, // row 2
+            -q3, -q2, q1, q0, // row 3
+        )
+    }
+    fn G(&self) -> Matrix3x4 {
+        let (q0, q1, q2, q3) = (self.w, self.i, self.j, self.k);
+        Matrix3x4::new(
+            -q1, q0, q3, -q2, // row 1
+            -q2, -q3, q0, q1, // row 2
+            -q3, q2, -q1, q0, // row 3
+        )
+    }
+    fn wijk(&self) -> Vector4 {
+        let mut q0 = self.w;
+        let mut q = self.vector();
+        Vector4::new(q0, q[0], q[1], q[2])
     }
 }
