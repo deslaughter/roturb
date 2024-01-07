@@ -152,8 +152,7 @@ impl State {
         for (i, mut c) in rn.column_iter_mut().enumerate() {
             let R1: UnitQuaternion = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
             let R2: UnitQuaternion = UnitQuaternion::from_scaled_axis(dr.column(i)); // change in rotation
-            let Rn: UnitQuaternion = R1 * R2; // new rotation
-            c.copy_from(&Vector4::new(Rn.w, Rn.i, Rn.j, Rn.k));
+            c.copy_from(&(R2 * R1).wijk());
         }
         q
     }
@@ -166,13 +165,13 @@ impl State {
         let qd: Matrix6xX = &self.q_delta * self.cfg.h;
 
         // Loop through nodes
-        for i in 0..self.q_delta.ncols() {
+        for (i, c) in qd.column_iter().enumerate() {
             // Translation
             let T_R3: Matrix3 = Matrix3::identity();
             T.fixed_view_mut::<3, 3>(i * 6, i * 6).copy_from(&T_R3);
 
             // Rotation
-            let T_SO3: Matrix3 = Vector3::from(qd.fixed_view::<3, 1>(3, i)).tangent_matrix();
+            let T_SO3: Matrix3 = c.fixed_rows::<3>(3).clone_owned().tangent_matrix();
             T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
                 .copy_from(&T_SO3);
         }
@@ -266,9 +265,6 @@ impl GeneralizedAlphaSolver {
 
             // Update state in element
             elem.update_states(&q, &state_next.v, &state_next.vd, &self.gravity);
-
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_elem.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, elem).expect("fail");
 
             // Get element residual vector, stiffness, damping, and mass matrices
             let R_FE: VectorD = elem.R_FE();
@@ -368,6 +364,17 @@ impl GeneralizedAlphaSolver {
             } else {
                 state_next.update_static(&delta_x);
             }
+
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_elem.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, elem).expect("fail");
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_St.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, &self.St).expect("fail");
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_R.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, &self.R).expect("fail");
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_x.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, &x).expect("fail");
+            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_q.json", i)).unwrap();
+            // serde_json::to_writer_pretty(f, &state_next.q()).expect("fail");
 
             // Update constraints
             if num_constraint_dofs > 0 {
