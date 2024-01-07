@@ -6,4 +6,5 @@
 *.out
 *.csv
 /vtk
-/iter
+/iter*
+*.ipynb
