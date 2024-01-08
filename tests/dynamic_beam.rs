@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use std::{f64::consts::PI, io::Write};
+use std::io::Write;
 
 use roturb::{
     element::{
@@ -9,7 +9,7 @@ use roturb::{
         quadrature::Quadrature,
     },
     prelude::*,
-    solver::{GeneralizedAlphaSolver, State, StepConfig},
+    solver::{GeneralizedAlphaSolver, State},
 };
 
 fn build_element() -> Element {
@@ -68,9 +68,9 @@ fn build_element() -> Element {
 fn test_cantilever_beam_with_with_sin_load() {
     // Solver parameters
     let rho_inf: f64 = 0.0;
-    let t0: f64 = 0.;
     let tf: f64 = 4.;
     let h: f64 = 0.005;
+    let is_dynamic_solve = true;
 
     let mut elem = build_element();
 
@@ -82,59 +82,58 @@ fn test_cantilever_beam_with_with_sin_load() {
     let gravity: Vector3 = Vector3::new(0., 0., 0.);
 
     // Number of state and constraint nodes
-    let num_state_nodes = elem.nodes.num;
+    let num_system_nodes = elem.nodes.num;
     let num_constraint_nodes = 1;
 
-    // Create generalized alpha step configuration
-    let step_config: StepConfig = StepConfig::new(rho_inf, h);
-
     // Create initial state
-    let state0: State = State::new(&step_config, num_state_nodes, t0);
+    let mut state: State = State::new(num_system_nodes, num_constraint_nodes);
 
     // Create generalized alpha solver
     let mut solver = GeneralizedAlphaSolver::new(
-        num_state_nodes,
+        num_system_nodes,
         num_constraint_nodes,
-        &state0,
+        rho_inf,
+        h,
         gravity,
-        true,
+        is_dynamic_solve,
     );
 
     // Create vector to store iteration states
-    let mut states: Vec<State> = vec![solver.state.clone()];
+    let mut states: Vec<State> = vec![state.clone()];
 
     // Sinusoidal force at tip in z direction
     let point_force = |t: f64| -> f64 { 1.0e2 * (10.0 * t).sin() };
 
     let mut file = std::fs::File::create("q_cbc.csv").expect("file failure");
 
-    while solver.state.time() <= tf {
+    // Loop through steps
+    let num_steps = (tf / h).ceil() as usize + 1;
+    for i in 1..num_steps {
+        // Calculate step time
+        let t = (i as f64) * h;
+
         // Apply sinusoidal force at tip in Z direction
         let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        forces[(2, elem.nodes.num - 1)] = point_force(solver.state.time() + h);
+        forces[(2, elem.nodes.num - 1)] = point_force(t);
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, &state) {
             None => {
-                print!("{:.3}s: failed to converge \n", solver.state.time() + h);
+                print!("{:.3}s: failed to converge \n", t);
                 break;
             }
-            Some(energy_incs) => {
-                print!(
-                    "{:.3}s: converged in {} iterations\n",
-                    solver.state.time(),
-                    energy_incs.len()
-                );
-                states.push(solver.state.clone());
-                file.write_fmt(format_args!("{:?}", solver.state.time()))
-                    .expect("fail");
+            Some((state_next, energy_incs)) => {
+                print!("{:.3}s: converged in {} iterations\n", t, energy_incs.len());
+                states.push(state_next.clone());
+                file.write_fmt(format_args!("{:?}", t)).expect("fail");
                 file.write_fmt(format_args!(",{:?}", energy_incs.len()))
                     .expect("fail");
-                for &v in solver.state.q().iter() {
+                for &v in state_next.q.iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
+                state = state_next;
             }
         }
     }
@@ -147,9 +146,9 @@ fn test_cantilever_beam_with_with_sin_load() {
 fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
     // Solver parameters
     let rho_inf: f64 = 0.0;
-    let t0: f64 = 0.;
     let tf: f64 = 4.;
     let h: f64 = 0.005;
+    let is_dynamic_solve = true;
 
     let mut elem = build_element();
 
@@ -158,62 +157,61 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
     //--------------------------------------------------------------------------
 
     // Number of state and constraint nodes
-    let num_state_nodes = elem.nodes.num;
+    let num_system_nodes = elem.nodes.num;
     let num_constraint_nodes = 0;
 
-    // Create generalized alpha step configuration
-    let step_config: StepConfig = StepConfig::new(rho_inf, h);
-
     // Create initial state
-    let state0: State = State::new(&step_config, num_state_nodes, t0);
+    let mut state: State = State::new(num_system_nodes, num_constraint_nodes);
 
     // Gravity loading
     let gravity: Vector3 = Vector3::new(0., 0., 0.);
 
     // Create generalized alpha solver
     let mut solver = GeneralizedAlphaSolver::new(
-        num_state_nodes,
+        num_system_nodes,
         num_constraint_nodes,
-        &state0,
+        rho_inf,
+        h,
         gravity,
-        true,
+        is_dynamic_solve,
     );
 
     // Create vector to store iteration states
-    let mut states: Vec<State> = vec![solver.state.clone()];
+    let mut states: Vec<State> = vec![state.clone()];
 
     // Sinusoidal force at tip in z direction
     let point_force = |t: f64| -> f64 { 100. * (10. * t).sin() };
 
     let mut file = std::fs::File::create("q_dbc.csv").expect("file failure");
 
-    while solver.state.time() <= tf {
+    // Loop through steps
+    let num_steps = (tf / h).ceil() as usize + 1;
+    for i in 1..num_steps {
+        // Calculate step time
+        let t = (i as f64) * h;
+
         // Apply sinusoidal force at tip in Z direction
         let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        forces[(2, elem.nodes.num - 1)] = point_force(solver.state.time() + h);
+        forces[(2, elem.nodes.num - 1)] = point_force(t);
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, &state) {
             None => {
-                print!("{:.3}s: failed to converge \n", solver.state.time() + h);
+                print!("{:.3}s: failed to converge \n", t);
                 break;
             }
-            Some(iter_data) => {
-                print!(
-                    "{:.3}s: converged in {} iterations\n",
-                    solver.state.time(),
-                    iter_data.len()
-                );
-                states.push(solver.state.clone());
-                file.write_fmt(format_args!("{:?}", solver.state.time()))
-                    .expect("fail");
+            Some((state_next, iter_data)) => {
+                print!("{:.3}s: converged in {} iterations\n", t, iter_data.len());
+                states.push(state_next.clone());
+                file.write_fmt(format_args!("{:?}", t)).expect("fail");
                 file.write_fmt(format_args!(",{:?}", iter_data.len()))
                     .expect("fail");
-                for &v in solver.state.q().columns(elem.nodes.num - 1, 1).iter() {
+                for &v in state_next.q.columns(elem.nodes.num - 1, 1).iter() {
                     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
                 }
                 file.write_all(b"\n").expect("fail");
+                state = state_next.clone();
             }
         }
     }
@@ -223,14 +221,16 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
 fn test_rotating_beam() {
     // Solver parameters
     let rho_inf: f64 = 0.0;
-    let t0: f64 = 0.;
     let tf: f64 = 2.;
     let h: f64 = 0.005;
     let omega = 8.; // rad/s
     let is_dynamic_solve = true;
-    let num_constraint_nodes = 0;
 
     let mut elem = build_element();
+
+    // Number of state and constraint nodes
+    let num_system_nodes = elem.nodes.num;
+    let num_constraint_nodes = 1;
 
     // let rot0 = PI;
     let rot0 = 0.;
@@ -243,12 +243,6 @@ fn test_rotating_beam() {
     // Gravity loading
     let gravity: Vector3 = Vector3::new(0., 0., 0.);
 
-    // Number of state and constraint nodes
-    let num_state_nodes = elem.nodes.num;
-
-    // Create generalized alpha step configuration
-    let step_config: StepConfig = StepConfig::new(rho_inf, h);
-
     // Create initial state
     let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
     for (i, mut c) in Q.column_iter_mut().enumerate() {
@@ -258,20 +252,21 @@ fn test_rotating_beam() {
     }
     let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
     let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-    let state0: State =
-        State::new_with_initial_state(&step_config, num_state_nodes, t0, &Q, &V, &A);
+    let mut state: State =
+        State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
 
     // Create generalized alpha solver
     let mut solver = GeneralizedAlphaSolver::new(
-        num_state_nodes,
+        num_system_nodes,
         num_constraint_nodes,
-        &state0,
+        rho_inf,
+        h,
         gravity,
         is_dynamic_solve,
     );
 
     // Create vector to store iteration states
-    let mut states: Vec<State> = vec![solver.state.clone()];
+    let mut states: Vec<State> = vec![state.clone()];
 
     let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
     let _ = std::fs::remove_dir_all("iter");
@@ -279,117 +274,53 @@ fn test_rotating_beam() {
 
     let num_steps = (tf / h).ceil() as usize + 1;
 
-    for i in 0..num_steps {
+    for i in 1..num_steps {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
-        let rotz = omega * (t + h) + rot0;
-        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rotz));
+        let rot_z = omega * (t + h) + rot0;
+        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot_z));
         elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, &state) {
             None => {
-                print!("{:.3}s: failed to converge \n", solver.state.time() + h);
+                print!("{:.3}s: failed to converge \n", t);
                 break;
             }
-            Some(iter_data) => {
-                let t = solver.state.time();
+            Some((state_next, iter_data)) => {
                 print!(
                     "Step {:3}, t={:.3}s: converged in {:2} iterations ({:.5} rad)\n",
                     i,
                     t,
                     iter_data.len(),
-                    rotz
+                    rot_z
                 );
-                states.push(solver.state.clone());
+                states.push(state_next.clone());
 
-                // file.write_fmt(format_args!("{:?}", t)).expect("fail");
-                // file.write_fmt(format_args!(",{:?}", iter_data.len()))
-                //     .expect("fail");
-                // for &v in solver.state.q().iter() {
-                //     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                // }
-                // file.write_all(b"\n").expect("fail");
+                file.write_fmt(format_args!("{:?}", t)).expect("fail");
+                file.write_fmt(format_args!(",{:?}", iter_data.len()))
+                    .expect("fail");
+                for &v in state_next.q.iter() {
+                    file.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                }
+                file.write_all(b"\n").expect("fail");
 
-                let vtk = element_vtk(&elem);
-                vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
+                let mut f = std::fs::File::create(format!("iter/step_{:0>3}_x.csv", i)).unwrap();
+                for (i, iter_data) in iter_data.iter().enumerate() {
+                    f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
+                    for &v in iter_data.x.iter() {
+                        f.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                    }
+                    f.write_all(b"\n").expect("fail");
+                }
+
+                elem.to_vtk()
+                    .export_ascii(format!("iter/step_{:0>3}.vtk", i))
                     .unwrap();
 
-                // let mut f =
-                //     std::fs::File::create(format!("iter/step_{:0>3}_conv_x.csv", i)).unwrap();
-                // for (i, idata) in iter_data.iter().enumerate() {
-                //     f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
-                //     for &v in idata.x.iter() {
-                //         f.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                //     }
-                //     f.write_all(b"\n").expect("fail");
-                // }
+                state = state_next.clone();
             }
-        }
-    }
-
-    use vtkio::model::*; // import model definition of a VTK file
-
-    fn element_vtk(elem: &Element) -> Vtk {
-        let rotations: Vec<Matrix3> = elem
-            .nodes
-            .r0
-            .column_iter()
-            .zip(elem.nodes.r.column_iter())
-            .map(|(r0, r)| {
-                (r0.clone_owned().as_unit_quaternion() * r.clone_owned().as_unit_quaternion())
-                    .to_rotation_matrix()
-                    .matrix()
-                    .clone_owned()
-            })
-            .collect_vec();
-        let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
-
-        Vtk {
-            version: Version { major: 4, minor: 2 },
-            title: String::new(),
-            byte_order: ByteOrder::LittleEndian,
-            file_path: None,
-            data: DataSet::inline(UnstructuredGridPiece {
-                points: IOBuffer::F64((&elem.nodes.u + &elem.nodes.x0).as_slice().to_vec()),
-                cells: Cells {
-                    cell_verts: VertexNumbers::XML {
-                        connectivity: {
-                            let mut a = vec![0, elem.nodes.num - 1];
-                            let b = (1..elem.nodes.num - 1).collect_vec();
-                            a.extend(b);
-                            a.iter().map(|&i| i as u64).collect_vec()
-                        },
-                        offsets: vec![elem.nodes.num as u64],
-                    },
-                    types: vec![CellType::LagrangeCurve],
-                },
-                data: Attributes {
-                    point: orientations
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &orientation)| {
-                            Attribute::DataArray(DataArrayBase {
-                                name: orientation.to_string(),
-                                elem: ElementType::Vectors,
-                                data: IOBuffer::F32(
-                                    rotations
-                                        .iter()
-                                        .flat_map(|r| {
-                                            r.column(i)
-                                                .iter()
-                                                .map(|&v| ((v * 1.0e7).round() / 1.0e7) as f32)
-                                                .collect_vec()
-                                        })
-                                        .collect_vec(),
-                                ),
-                            })
-                        })
-                        .collect_vec(),
-                    ..Default::default()
-                },
-            }),
         }
     }
 }

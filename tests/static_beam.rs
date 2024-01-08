@@ -5,7 +5,7 @@ use std::ops::Sub;
 use approx::assert_relative_eq;
 use roturb::{
     element::{
-        gebt::{Element, Material, Nodes, Section},
+        gebt::{Material, Nodes, Section},
         interp::{
             gauss_legendre_lobotto_points, lagrange_polynomial_derivative,
             quaternion_from_tangent_twist,
@@ -13,11 +13,15 @@ use roturb::{
         quadrature::Quadrature,
     },
     prelude::*,
-    solver::{GeneralizedAlphaSolver, State, StepConfig},
+    solver::{GeneralizedAlphaSolver, State},
 };
 
 #[test]
 fn test_static_element() {
+    let rho_inf = 1.0;
+    let h = 1.0;
+    let num_constraint_nodes = 1;
+
     //--------------------------------------------------------------------------
     // Initial configuration
     //--------------------------------------------------------------------------
@@ -50,11 +54,10 @@ fn test_static_element() {
     }
 
     let r0: Matrix4xX = Matrix4xX::from_columns(
-        s.iter()
+        &s.iter()
             .zip(tangent.column_iter())
             .map(|(&si, tan)| quaternion_from_tangent_twist(&Vector3::from(tan), ft(si)).wijk())
-            .collect::<Vec<Vector4>>()
-            .as_slice(),
+            .collect_vec(),
     );
 
     //--------------------------------------------------------------------------
@@ -115,30 +118,38 @@ fn test_static_element() {
     // Create element from nodes
     let mut elem = nodes.element(&gq, &sections);
 
+    let num_system_nodes = elem.nodes.num;
+
     //--------------------------------------------------------------------------
     // Step configuration
     //--------------------------------------------------------------------------
 
-    let step_config = StepConfig::new(1.0, 1.0);
-
     let gravity: Vector3 = Vector3::zeros();
 
     let is_dynamic_solve = false;
+
+    // Create generalized alpha solver
+    let mut solver = GeneralizedAlphaSolver::new(
+        num_system_nodes,
+        num_constraint_nodes,
+        rho_inf,
+        h,
+        gravity,
+        is_dynamic_solve,
+    );
 
     //--------------------------------------------------------------------------
     // Test solve of element with no initial displacement
     //--------------------------------------------------------------------------
 
     // Create initial state
-    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
-
-    // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
+    let state: State = State::new(num_system_nodes, num_constraint_nodes);
 
     // Solve time step
-    let errors = solver.step(&mut elem).expect("solution failed to converge");
-    assert_eq!(errors.len(), 1);
+    let (_, iter_data) = solver
+        .step(&mut elem, &state)
+        .expect("solution failed to converge");
+    assert_eq!(iter_data.len(), 1);
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -152,41 +163,40 @@ fn test_static_element() {
     let A: Matrix6xX = Matrix6xX::zeros(u.ncols());
 
     // Create initial state
-    let state0: State = State::new_with_initial_state(&step_config, elem.nodes.num, 0., &Q, &V, &A);
-
-    // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
+    let state: State =
+        State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
 
     // Solve time step
-    let errors = solver.step(&mut elem).expect("solution failed to converge");
-    assert_eq!(errors.len(), 2);
+    let (state_next, _) = solver
+        .step(&mut elem, &state)
+        .expect("solution failed to converge");
+    assert_relative_eq!(
+        state_next
+            .q
+            .fixed_view::<3, 1>(0, state_next.q.ncols() - 1)
+            .clone_owned(),
+        Vector3::zeros()
+    );
 
     //--------------------------------------------------------------------------
     // Test solve of element with applied load
     //--------------------------------------------------------------------------
 
     // Create initial state
-    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
-
-    // Create generalized alpha solver
-    let mut solver =
-        GeneralizedAlphaSolver::new(elem.nodes.num, 1, &state0, gravity, is_dynamic_solve);
+    let state: State = State::new(num_system_nodes, num_constraint_nodes);
 
     // Create force matrix, apply 150 lbs force in z direction of last node
     let mut forces: Matrix6xX = Matrix6xX::zeros(num_nodes);
     forces[(2, num_nodes - 1)] = 150.;
     elem.apply_force(&forces);
 
-    let errors = solver.step(&mut elem).expect("solution failed to converge");
-
-    // Verify number of convergence iterations
-    assert_eq!(errors.len(), 5);
+    let (state_next, _) = solver
+        .step(&mut elem, &state)
+        .expect("solution failed to converge");
 
     // Verify end node displacement in xyz
-    let q = solver.state.q();
     assert_relative_eq!(
-        Vector3::from(q.fixed_view::<3, 1>(0, num_nodes - 1)),
+        Vector3::from(state_next.q.fixed_view::<3, 1>(0, num_system_nodes - 1)),
         Vector3::new(
             -0.09019953380447539,
             -0.06472124330431532,
@@ -200,6 +210,8 @@ fn test_static_element() {
 fn test_static_beam_curl() {
     let num_constraint_nodes = 1;
     let is_dynamic_solve = false;
+    let rho_inf = 1.0;
+    let h = 1.0;
 
     // Create list of moments to apply to end of beam
     let Mz = vec![0., 10920.0, 21840.0, 32761.0, 43681.0, 54601.0];
@@ -267,7 +279,6 @@ fn test_static_beam_curl() {
     // Step configuration
     //--------------------------------------------------------------------------
 
-    let step_config = StepConfig::new(1.0, 1.0);
     let gravity: Vector3 = Vector3::zeros();
 
     //--------------------------------------------------------------------------
@@ -275,13 +286,14 @@ fn test_static_beam_curl() {
     //--------------------------------------------------------------------------
 
     // Create initial state
-    let state0: State = State::new(&step_config, elem.nodes.num, 0.);
+    let state: State = State::new(elem.nodes.num, num_constraint_nodes);
 
     // Create generalized alpha solver
     let mut solver = GeneralizedAlphaSolver::new(
         elem.nodes.num,
         num_constraint_nodes,
-        &state0,
+        rho_inf,
+        h,
         gravity,
         is_dynamic_solve,
     );
@@ -297,16 +309,24 @@ fn test_static_beam_curl() {
 
     // Loop through moments
     for (i, &m) in Mz.iter().enumerate() {
+        // Apply moment to tip node about y axis
         forces[(4, num_nodes - 1)] = -m;
         elem.apply_force(&forces);
-        let iter_data = solver.step(&mut elem).expect("solution failed to converge");
+
+        // Step
+        let (state_next, iter_data) = solver
+            .step(&mut elem, &state)
+            .expect("solution failed to converge");
         println!("Mz={:6}, niter={}", m, iter_data.len());
-        let q = solver.state.q();
+
+        // Get tip displacement
         u_tip
             .column_mut(i)
-            .copy_from(&q.fixed_view::<3, 1>(0, q.ncols() - 1));
-        let vtk = element_vtk(&elem);
-        vtk.export_ascii(format!("iter/step_{:0>3}.vtk", i))
+            .copy_from(&state_next.q.fixed_view::<3, 1>(0, state_next.q.ncols() - 1));
+
+        // Write VTK file of element
+        elem.to_vtk()
+            .export_ascii(format!("iter/step_{:0>3}.vtk", i))
             .unwrap();
     }
 
@@ -322,68 +342,4 @@ fn test_static_beam_curl() {
         ]),
         epsilon = 1.0e-3
     )
-}
-
-use vtkio::model::*; // import model definition of a VTK file
-
-fn element_vtk(elem: &Element) -> Vtk {
-    let rotations: Vec<Matrix3> = elem
-        .nodes
-        .r0
-        .column_iter()
-        .zip(elem.nodes.r.column_iter())
-        .map(|(r0, r)| {
-            (r0.clone_owned().as_unit_quaternion() * r.clone_owned().as_unit_quaternion())
-                .to_rotation_matrix()
-                .matrix()
-                .clone_owned()
-        })
-        .collect_vec();
-    let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
-
-    Vtk {
-        version: Version { major: 4, minor: 2 },
-        title: String::new(),
-        byte_order: ByteOrder::LittleEndian,
-        file_path: None,
-        data: DataSet::inline(UnstructuredGridPiece {
-            points: IOBuffer::F64((&elem.nodes.u + &elem.nodes.x0).as_slice().to_vec()),
-            cells: Cells {
-                cell_verts: VertexNumbers::XML {
-                    connectivity: {
-                        let mut a = vec![0, elem.nodes.num - 1];
-                        let b = (1..elem.nodes.num - 1).collect_vec();
-                        a.extend(b);
-                        a.iter().map(|&i| i as u64).collect_vec()
-                    },
-                    offsets: vec![elem.nodes.num as u64],
-                },
-                types: vec![CellType::LagrangeCurve],
-            },
-            data: Attributes {
-                point: orientations
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &orientation)| {
-                        Attribute::DataArray(DataArrayBase {
-                            name: orientation.to_string(),
-                            elem: ElementType::Vectors,
-                            data: IOBuffer::F32(
-                                rotations
-                                    .iter()
-                                    .flat_map(|r| {
-                                        r.column(i)
-                                            .iter()
-                                            .map(|&v| ((v * 1.0e7).round() / 1.0e7) as f32)
-                                            .collect_vec()
-                                    })
-                                    .collect_vec(),
-                            ),
-                        })
-                    })
-                    .collect_vec(),
-                ..Default::default()
-            },
-        }),
-    }
 }

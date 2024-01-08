@@ -7,6 +7,7 @@ use super::{
 };
 use crate::prelude::*;
 use serde::Serialize;
+use vtkio::model::*; // import model definition of a VTK file
 
 //------------------------------------------------------------------------------
 // Element
@@ -214,6 +215,68 @@ impl Element {
         let mut B = Matrix6xX::zeros(self.nodes.num * 6);
         B.fill_diagonal(1.);
         B
+    }
+
+    pub fn to_vtk(&self) -> Vtk {
+        let rotations: Vec<Matrix3> = self
+            .nodes
+            .r0
+            .column_iter()
+            .zip(self.nodes.r.column_iter())
+            .map(|(r0, r)| {
+                (r0.clone_owned().as_unit_quaternion() * r.clone_owned().as_unit_quaternion())
+                    .to_rotation_matrix()
+                    .matrix()
+                    .clone_owned()
+            })
+            .collect_vec();
+        let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
+
+        Vtk {
+            version: Version { major: 4, minor: 2 },
+            title: String::new(),
+            byte_order: ByteOrder::LittleEndian,
+            file_path: None,
+            data: DataSet::inline(UnstructuredGridPiece {
+                points: IOBuffer::F64((&self.nodes.u + &self.nodes.x0).as_slice().to_vec()),
+                cells: Cells {
+                    cell_verts: VertexNumbers::XML {
+                        connectivity: {
+                            let mut a = vec![0, self.nodes.num - 1];
+                            let b = (1..self.nodes.num - 1).collect_vec();
+                            a.extend(b);
+                            a.iter().map(|&i| i as u64).collect_vec()
+                        },
+                        offsets: vec![self.nodes.num as u64],
+                    },
+                    types: vec![CellType::LagrangeCurve],
+                },
+                data: Attributes {
+                    point: orientations
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &orientation)| {
+                            Attribute::DataArray(DataArrayBase {
+                                name: orientation.to_string(),
+                                elem: ElementType::Vectors,
+                                data: IOBuffer::F32(
+                                    rotations
+                                        .iter()
+                                        .flat_map(|r| {
+                                            r.column(i)
+                                                .iter()
+                                                .map(|&v| ((v * 1.0e7).round() / 1.0e7) as f32)
+                                                .collect_vec()
+                                        })
+                                        .collect_vec(),
+                                ),
+                            })
+                        })
+                        .collect_vec(),
+                    ..Default::default()
+                },
+            }),
+        }
     }
 }
 
