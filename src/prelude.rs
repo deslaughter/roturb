@@ -4,6 +4,8 @@ use nalgebra::{Dyn, U7};
 pub use itertools::{izip, Itertools};
 pub use std::ops::AddAssign;
 
+pub use std::f64::consts::PI;
+
 //------------------------------------------------------------------------------
 // Types
 //------------------------------------------------------------------------------
@@ -91,9 +93,22 @@ impl RotVecExt for Vector3 {
             Matrix3::identity()
         } else {
             Matrix3::identity()
-                + (1. - phi.cos()) / phi.powi(2) * self.tilde()
-                + (1. - phi.sin() / phi) / phi.powi(2) * (self.tilde() * self.tilde())
+                + (phi.cos() - 1.) / phi.powi(2) * self.tilde()
+                + (1. - phi.sin() / phi) * self.tilde() * self.tilde() / phi.powi(2)
         }
+        // let psi: Vector3 = self.clone_owned();
+        // let phi = psi.norm();
+        // let f1 = if phi > 1e-2 {
+        //     (phi.cos() - 1.) / phi.powi(2)
+        // } else {
+        //     -0.5 + phi.powi(2) / 24. - phi.powi(4) / 720.
+        // };
+        // let f2 = if phi > 1e-4 {
+        //     (phi - phi.sin()) / phi.powi(3)
+        // } else {
+        //     1. / 6. - phi.powi(2) / 120. + phi.powi(4) / 5040.
+        // };
+        // Matrix3::identity() + f1 * psi.tilde() + f2 * psi.tilde() * psi.tilde()
     }
 }
 

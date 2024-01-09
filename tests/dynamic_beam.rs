@@ -18,8 +18,8 @@ fn build_element() -> Element {
     let num_nodes = s.len();
 
     // Quadrature rule
-    // let gq = Quadrature::gauss(7);
-    let gq = Quadrature::gauss_legendre_lobotto(10); // Nodal quadrature
+    let gq = Quadrature::gauss(7);
+    // let gq = Quadrature::gauss_legendre_lobotto(10); // Nodal quadrature
 
     // Node initial position and rotation
     let fx = |s: f64| -> f64 { 10. * s };
@@ -118,7 +118,7 @@ fn test_cantilever_beam_with_with_sin_load() {
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem, &state) {
+        match solver.step(i, &mut elem, &state) {
             None => {
                 print!("{:.3}s: failed to converge \n", t);
                 break;
@@ -196,7 +196,7 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem, &state) {
+        match solver.step(i, &mut elem, &state) {
             None => {
                 print!("{:.3}s: failed to converge \n", t);
                 break;
@@ -220,20 +220,22 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
 #[test]
 fn test_rotating_beam() {
     // Solver parameters
-    let rho_inf: f64 = 0.0;
-    let tf: f64 = 2.;
-    let h: f64 = 0.005;
-    let omega = 8.; // rad/s
-    let is_dynamic_solve = true;
+    let rho_inf: f64 = 1.0;
+    let tf: f64 = 0.5;
+    let h: f64 = 0.01;
+    let omega = 4.; // rad/s
+    let is_dynamic_solve = false;
 
     let mut elem = build_element();
 
-    // Number of state and constraint nodes
+    // Number of system and constraint nodes
     let num_system_nodes = elem.nodes.num;
     let num_constraint_nodes = 1;
 
-    // let rot0 = PI;
     let rot0 = 0.;
+    // let rot0 = 5. * PI / 4.;
+    let rot0 = PI / 2.;
+    // let rot0 = 3.;
     let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot0));
 
     //--------------------------------------------------------------------------
@@ -265,9 +267,6 @@ fn test_rotating_beam() {
         is_dynamic_solve,
     );
 
-    // Create vector to store iteration states
-    let mut states: Vec<State> = vec![state.clone()];
-
     let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
     let _ = std::fs::remove_dir_all("iter");
     std::fs::create_dir("iter").unwrap();
@@ -278,12 +277,29 @@ fn test_rotating_beam() {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
-        let rot_z = omega * (t + h) + rot0;
+        let rot_z = omega * t + rot0;
         let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot_z));
         elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
 
+        let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        forces[(2, elem.nodes.num - 1)] = 10.;
+        elem.apply_force(&forces);
+
+        // let r0: UnitQuaternion =
+        //     UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., omega * (t - h) + rot0));
+        // let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
+        // for (i, mut c) in Q.column_iter_mut().enumerate() {
+        //     c.rows_mut(0, 3)
+        //         .copy_from(&(r0 * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
+        //     c.rows_mut(3, 4).copy_from(&r0.wijk());
+        // }
+        // let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        // let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        // let mut state: State =
+        //     State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
+
         // Solve time step
-        match solver.step(&mut elem, &state) {
+        match solver.step(i, &mut elem, &state) {
             None => {
                 print!("{:.3}s: failed to converge \n", t);
                 break;
@@ -296,7 +312,6 @@ fn test_rotating_beam() {
                     iter_data.len(),
                     rot_z
                 );
-                states.push(state_next.clone());
 
                 file.write_fmt(format_args!("{:?}", t)).expect("fail");
                 file.write_fmt(format_args!(",{:?}", iter_data.len()))

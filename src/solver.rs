@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use std::ops::Div;
+
 use crate::prelude::*;
 
 use crate::element::gebt::Element;
@@ -44,7 +46,7 @@ impl State {
             num_constraint_nodes,
             q_delta: Matrix6xX::zeros(num_system_nodes),
             q_prev: Q.clone(),
-            q: Matrix7xX::zeros(num_system_nodes),
+            q: Q.clone(),
             v: V.clone(),
             vd: A.clone(),
             a: Matrix6xX::zeros(num_system_nodes),
@@ -55,13 +57,13 @@ impl State {
     /// Returns structure predicting the state at the end of the next step
     pub fn predict_next(&self, h: f64, beta: f64, gamma: f64, alpha_m: f64, alpha_f: f64) -> State {
         let mut ns = self.clone();
+        ns.vd.fill(0.);
+        ns.lambda.fill(0.);
         ns.a = (alpha_f * &self.vd - alpha_m * &self.a) / (1. - alpha_m);
+        ns.v = &self.v + h * (1. - gamma) * &self.a + gamma * h * &ns.a;
         ns.q_delta = &self.v + (0.5 - beta) * h * &self.a + beta * h * &ns.a;
         ns.q_prev.copy_from(&self.q);
         ns.update_q(h);
-        ns.v = &self.v + h * (1. - gamma) * &self.a + gamma * h * &ns.a;
-        ns.vd.fill(0.);
-        ns.lambda.fill(0.);
         ns
     }
 
@@ -73,7 +75,7 @@ impl State {
         self.vd += beta_prime * x_delta;
         self.update_q(h);
         let lambda_delta = delta.columns(self.num_system_nodes, self.num_constraint_nodes);
-        self.lambda += lambda_delta;
+        self.lambda -= lambda_delta;
     }
 
     // Updates state during a static solve
@@ -82,7 +84,7 @@ impl State {
         self.q_delta += x_delta / h;
         self.update_q(h);
         let lambda_delta = delta.columns(self.num_system_nodes, self.num_constraint_nodes);
-        self.lambda += lambda_delta;
+        self.lambda -= lambda_delta;
     }
 
     /// Updates the algorithmic acceleration at the end of a time step
@@ -108,6 +110,7 @@ impl State {
             let R1: UnitQuaternion = Vector4::from(r.column(i)).as_unit_quaternion(); // current rotation
             let R2: UnitQuaternion = UnitQuaternion::from_scaled_axis(dr.column(i)); // change in rotation
             c.copy_from(&(R2 * R1).wijk());
+            // c.copy_from(&(R1 * R2).wijk());
         }
     }
 
@@ -126,6 +129,7 @@ impl State {
 
             // Rotation
             let T_SO3: Matrix3 = c.fixed_rows::<3>(3).clone_owned().tangent_matrix();
+            // let T_SO3: Matrix3 = Matrix3::identity();
             T.fixed_view_mut::<3, 3>(i * 6 + 3, i * 6 + 3)
                 .copy_from(&T_SO3);
         }
@@ -208,7 +212,12 @@ impl GeneralizedAlphaSolver {
         }
     }
 
-    pub fn step(&mut self, elem: &mut Element, state: &State) -> Option<(State, Vec<IterData>)> {
+    pub fn step(
+        &mut self,
+        i: usize,
+        elem: &mut Element,
+        state: &State,
+    ) -> Option<(State, Vec<IterData>)> {
         let mut iter_data: Vec<IterData> = Vec::new();
 
         // Number of degrees of freedom
@@ -223,7 +232,7 @@ impl GeneralizedAlphaSolver {
         let mut energy_increment_ref: f64 = 0.;
 
         // Convergence iterations
-        for i in 0..50 {
+        for iter in 0..20 {
             // If no constraints, prescribe the root displacement on node 1
             if self.num_constraint_nodes == 0 {
                 state_next.q.column_mut(0).copy_from(&elem.q_root);
@@ -291,7 +300,7 @@ impl GeneralizedAlphaSolver {
 
             // Condition the iteration matrix and residuals
             let St: MatrixD = &self.DL * &self.St * &self.DR;
-            let R: VectorD = self.R.component_mul(&self.DL_diag);
+            let R: VectorD = -self.R.component_mul(&self.DL_diag);
 
             // Solve system
             let mut x: VectorD = VectorD::zeros(num_node_dofs);
@@ -313,9 +322,69 @@ impl GeneralizedAlphaSolver {
                 return None;
             }
 
-            // Un-condition the solution vector
-            let delta_x: Matrix6xX =
-                Matrix6xX::from_column_slice((-x.component_mul(&self.DR_diag)).as_slice());
+            // Remove conditioning and reshape solution vector
+            x.component_mul_assign(&self.DR_diag);
+            let delta_x: Matrix6xX = Matrix6xX::from_column_slice(x.as_slice());
+
+            if iter > -1 {
+                let mut f = std::fs::File::create(format!(
+                    "iter/step_{:0>3}_iter_{:0>2}_elem.json",
+                    i, iter
+                ))
+                .unwrap();
+                serde_json::to_writer_pretty(f, elem).expect("fail");
+                let mut f =
+                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_St.json", i, iter))
+                        .unwrap();
+                serde_json::to_writer_pretty(f, &self.St).expect("fail");
+                let mut f =
+                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_R.json", i, iter))
+                        .unwrap();
+                serde_json::to_writer_pretty(f, &self.R).expect("fail");
+                let mut f =
+                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_x.json", i, iter))
+                        .unwrap();
+                serde_json::to_writer_pretty(f, &x).expect("fail");
+                let mut f =
+                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_q.json", i, iter))
+                        .unwrap();
+                serde_json::to_writer_pretty(f, &state_next.q).expect("fail");
+            }
+
+            // Check for convergence
+            // let energy_increment = self.R.dot(&x).abs();
+            // iter_data.push(IterData {
+            //     energy_inc: energy_increment,
+            //     residual: self.R.clone(),
+            //     x: x.clone(),
+            // });
+            // if iter == 0 {
+            //     energy_increment_ref = energy_increment;
+            //     continue;
+            // }
+            // let energy_ratio = energy_increment / energy_increment_ref;
+            // if energy_increment < 1e-8 || energy_ratio < 1e-6 {
+            //     state_next.update_algorithmic_acceleration(self.alpha_m, self.alpha_f);
+            //     return Some((state_next, iter_data));
+            // }
+            let atol = 1e-7;
+            let rtol = 1e-5;
+            let err: f64 = x
+                .iter()
+                .zip(state_next.q_delta.iter())
+                .map(|(&di, &dqi)| (di / (atol + rtol * dqi.abs())).powi(2))
+                .sum::<f64>()
+                .div(x.len() as f64)
+                .sqrt();
+            iter_data.push(IterData {
+                energy_inc: err,
+                residual: self.R.clone(),
+                x: x.clone(),
+            });
+            if err < 1. {
+                state_next.update_algorithmic_acceleration(self.alpha_m, self.alpha_f);
+                return Some((state_next, iter_data));
+            }
 
             // update state and lambda
             if self.is_dynamic_solve {
@@ -323,38 +392,11 @@ impl GeneralizedAlphaSolver {
             } else {
                 state_next.update_static(&delta_x, self.h);
             }
-
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_elem.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, elem).expect("fail");
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_St.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, &self.St).expect("fail");
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_R.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, &self.R).expect("fail");
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_x.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, &x).expect("fail");
-            // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_q.json", i)).unwrap();
-            // serde_json::to_writer_pretty(f, &state_next.q()).expect("fail");
-
-            // Check for convergence
-            let energy_increment = self.R.dot(&x).abs();
-            iter_data.push(IterData {
-                energy_inc: energy_increment,
-                residual: self.R.clone(),
-                x: x.clone(),
-            });
-            if i == 0 {
-                energy_increment_ref = energy_increment;
-            }
-            let energy_ratio = energy_increment / energy_increment_ref;
-            if energy_increment < 1e-8 || energy_ratio < 1e-5 {
-                state_next.update_algorithmic_acceleration(self.alpha_m, self.alpha_f);
-                return Some((state_next, iter_data));
-            }
         }
         // Solution did not converge
-        state_next.update_algorithmic_acceleration(self.alpha_m, self.alpha_f);
-        Some((state_next, iter_data))
-        // None
+        // state_next.update_algorithmic_acceleration(self.alpha_m, self.alpha_f);
+        // Some((state_next, iter_data))
+        None
     }
 }
 

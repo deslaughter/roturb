@@ -1,7 +1,5 @@
 #![allow(non_snake_case)]
 
-use std::ops::Sub;
-
 use approx::assert_relative_eq;
 use roturb::{
     element::{
@@ -147,7 +145,7 @@ fn test_static_element() {
 
     // Solve time step
     let (_, iter_data) = solver
-        .step(&mut elem, &state)
+        .step(0, &mut elem, &state)
         .expect("solution failed to converge");
     assert_eq!(iter_data.len(), 1);
 
@@ -168,7 +166,7 @@ fn test_static_element() {
 
     // Solve time step
     let (state_next, _) = solver
-        .step(&mut elem, &state)
+        .step(0, &mut elem, &state)
         .expect("solution failed to converge");
     assert_relative_eq!(
         state_next
@@ -191,7 +189,7 @@ fn test_static_element() {
     elem.apply_force(&forces);
 
     let (state_next, _) = solver
-        .step(&mut elem, &state)
+        .step(0, &mut elem, &state)
         .expect("solution failed to converge");
 
     // Verify end node displacement in xyz
@@ -243,7 +241,7 @@ fn test_static_beam_curl() {
 
     // Node initial rotation
     let r0: Matrix4xX =
-        Matrix4xX::from_column_slice(&s.iter().flat_map(|&si| vec![1., 0., 0., 0.]).collect_vec());
+        Matrix4xX::from_column_slice(&s.iter().flat_map(|&_si| vec![1., 0., 0., 0.]).collect_vec());
 
     //--------------------------------------------------------------------------
     // Material
@@ -315,7 +313,7 @@ fn test_static_beam_curl() {
 
         // Step
         let (state_next, iter_data) = solver
-            .step(&mut elem, &state)
+            .step(i, &mut elem, &state)
             .expect("solution failed to converge");
         println!("Mz={:6}, niter={}", m, iter_data.len());
 

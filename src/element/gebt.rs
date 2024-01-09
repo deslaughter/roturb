@@ -182,37 +182,57 @@ impl Element {
     }
 
     pub fn constraint_residual_vector(&self) -> Vector6 {
+        // // Root rotation as unit quaternions
+        // let root_r = self
+        //     .q_root
+        //     .fixed_rows::<4>(3)
+        //     .clone_owned()
+        //     .as_unit_quaternion()
+        //     .scaled_axis();
+        // // Node 1 rotation as unit quaternions
+        // let n1_r = self
+        //     .nodes
+        //     .r
+        //     .fixed_columns::<1>(0)
+        //     .clone_owned()
+        //     .as_unit_quaternion()
+        //     .scaled_axis();
+        // let Phi = Vector6::new(
+        //     self.nodes.u[0] - self.q_root[0],
+        //     self.nodes.u[1] - self.q_root[1],
+        //     self.nodes.u[2] - self.q_root[2],
+        //     n1_r[0] - root_r[0],
+        //     n1_r[1] - root_r[1],
+        //     n1_r[2] - root_r[2],
+        // );
+        // Phi
         // Root rotation as unit quaternions
         let root_r = self
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
+            .as_unit_quaternion();
         // Node 1 rotation as unit quaternions
         let n1_r = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
-        // let diff_r = (root_r.inverse() * n1_r).scaled_axis();
-        Vector6::new(
+            .as_unit_quaternion();
+        let diff = (root_r.inverse() * n1_r).scaled_axis();
+        let Phi = Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            n1_r[0] - root_r[0],
-            n1_r[1] - root_r[1],
-            n1_r[2] - root_r[2],
-            // diff_r[0],
-            // diff_r[1],
-            // diff_r[2],
-        )
+            diff[0],
+            diff[1],
+            diff[2],
+        );
+        Phi
     }
 
     pub fn constraints_gradient_matrix(&self) -> Matrix6xX {
-        let mut B = Matrix6xX::zeros(self.nodes.num * 6);
+        let mut B: Matrix6xX = Matrix6xX::zeros(self.nodes.num * 6);
         B.fill_diagonal(1.);
         B
     }
@@ -529,15 +549,6 @@ impl QuadraturePoint {
         // Sectional strain
         let e1: Vector3 = self.x0_prime + u_prime - R * self.x0_prime;
         let e2: Vector3 = 2. * R.E() * R_prime.wijk();
-        // let e1: Vector3 = self.x0_prime + u_prime - self.RR0.matrix().column(0);
-        // let R_prime_Rt = R.to_rotation_matrix()
-        //     * (2. * R.G() * R_prime.G().transpose())
-        //     * R.to_rotation_matrix().transpose();
-        // let e2 = Vector3::new(
-        //     R_prime_Rt[(2, 1)] - R_prime_Rt[(1, 2)],
-        //     R_prime_Rt[(0, 2)] - R_prime_Rt[(2, 0)],
-        //     R_prime_Rt[(1, 0)] - R_prime_Rt[(0, 1)],
-        // ) / 2.;
         self.strain = Vector6::new(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2]);
 
         // Calculate skew_symmetric_matrix(x0_prime + u_prime)
