@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use std::io::Write;
+
 use crate::prelude::*;
 
 use crate::element::gebt::Element;
@@ -238,7 +240,7 @@ impl GeneralizedAlphaSolver {
         }
     }
 
-    pub fn step(&mut self, elem: &mut Element) -> Option<Vec<IterData>> {
+    pub fn step(&mut self, elem: &mut Element, iter: usize) -> Option<Vec<IterData>> {
         let mut iter_data: Vec<IterData> = Vec::new();
 
         // Number of degrees of freedom
@@ -319,8 +321,8 @@ impl GeneralizedAlphaSolver {
                 self.St
                     .view_mut((num_node_dofs, 0), (num_constraint_dofs, num_node_dofs))
                     .add_assign(&B * &T);
-                // Quadrant 2,1
 
+                // Quadrant 2,1
                 self.St
                     .view_mut((0, num_node_dofs), (num_node_dofs, num_constraint_dofs))
                     .add_assign(&B.transpose());
