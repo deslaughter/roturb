@@ -180,39 +180,42 @@ impl Element {
         VectorD::from_column_slice(V.as_slice())
     }
 
-    pub fn constraint_residual_vector(&self) -> Vector6 {
+    fn root_relative_rotation(&self) -> Vector3 {
         // Root rotation as unit quaternions
-        let root_r = self
+        let R_root = self
             .q_root
             .fixed_rows::<4>(3)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
+            .as_unit_quaternion();
         // Node 1 rotation as unit quaternions
-        let n1_r = self
+        let R_n1 = self
             .nodes
             .r
             .fixed_columns::<1>(0)
             .clone_owned()
-            .as_unit_quaternion()
-            .scaled_axis();
-        // let diff_r = (root_r.inverse() * n1_r).scaled_axis();
+            .as_unit_quaternion();
+        (R_n1 * R_root.inverse()).scaled_axis()
+    }
+
+    pub fn constraint_residual_vector(&self) -> Vector6 {
+        let R_diff = self.root_relative_rotation();
         Vector6::new(
             self.nodes.u[0] - self.q_root[0],
             self.nodes.u[1] - self.q_root[1],
             self.nodes.u[2] - self.q_root[2],
-            n1_r[0] - root_r[0],
-            n1_r[1] - root_r[1],
-            n1_r[2] - root_r[2],
-            // diff_r[0],
-            // diff_r[1],
-            // diff_r[2],
+            R_diff[0],
+            R_diff[1],
+            R_diff[2],
         )
     }
 
     pub fn constraints_gradient_matrix(&self) -> Matrix6xX {
         let mut B = Matrix6xX::zeros(self.nodes.num * 6);
-        B.fill_diagonal(1.);
+        let R_diff = self.root_relative_rotation();
+        B.fixed_view_mut::<3, 3>(0, 0)
+            .copy_from(&Matrix3::identity());
+        B.fixed_view_mut::<3, 3>(3, 3)
+            .copy_from(&R_diff.tangent_matrix());
         B
     }
 }
@@ -341,9 +344,18 @@ impl Nodes {
             })
             .collect();
 
+        // Initialize q_root to the first node position and rotation
+        let mut q_root: Vector7 = Vector7::zeros();
+        q_root
+            .fixed_rows_mut::<3>(0)
+            .copy_from(&self.x0.fixed_columns::<1>(0));
+        q_root
+            .fixed_rows_mut::<4>(3)
+            .copy_from(&self.r0.fixed_columns::<1>(0));
+
         // Build and return element
         Element {
-            q_root: Vector7::from_vec(vec![0., 0., 0., 1., 0., 0., 0.]),
+            q_root: q_root,
             nodes: self.clone(),
             qps,
             shape_func_interp,
