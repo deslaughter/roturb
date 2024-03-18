@@ -115,7 +115,7 @@ fn test_cantilever_beam_with_with_sin_load() {
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, 0) {
             None => {
                 print!("{:.3}s: failed to converge \n", solver.state.time() + h);
                 break;
@@ -194,7 +194,7 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
         elem.apply_force(&forces);
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, 0) {
             None => {
                 print!("{:.3}s: failed to converge \n", solver.state.time() + h);
                 break;
@@ -222,19 +222,20 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
 #[test]
 fn test_rotating_beam() {
     // Solver parameters
-    let rho_inf: f64 = 0.0;
+    let rho_inf: f64 = 0.9;
     let t0: f64 = 0.;
-    let tf: f64 = 2.;
-    let h: f64 = 0.005;
-    let omega = 8.; // rad/s
+    let tf: f64 = 10.;
+    let h: f64 = 0.01;
+    let omega: Vector3 = Vector3::new(0., 0., 1.); // rad/s
     let is_dynamic_solve = true;
-    let num_constraint_nodes = 0;
+    let num_constraint_nodes = 1;
+    let omega_init_scale = 0.5;
 
     let mut elem = build_element();
 
-    // let rot0 = PI;
-    let rot0 = 0.;
-    let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot0));
+    let rot0 = Vector3::new(0., 0., 0.);
+    // let rot0 = Vector3::new(0., 0., PI);
+    let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(rot0);
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -249,15 +250,27 @@ fn test_rotating_beam() {
     // Create generalized alpha step configuration
     let step_config: StepConfig = StepConfig::new(rho_inf, h);
 
-    // Create initial state
+    // Initial displacement
     let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
     for (i, mut c) in Q.column_iter_mut().enumerate() {
         c.rows_mut(0, 3)
             .copy_from(&(r0 * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
         c.rows_mut(3, 4).copy_from(&r0.wijk());
     }
-    let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+
+    // Initial velocity
+    let mut V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+    let omega_init = omega * omega_init_scale;
+    for (i, mut c) in V.column_iter_mut().enumerate() {
+        c.rows_mut(0, 3)
+            .copy_from(&(omega_init.cross(&elem.nodes.x0.column(i))));
+        c.rows_mut(3, 3).copy_from(&omega_init);
+    }
+
+    // Initial acceleration
     let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+
+    // Inital state
     let state0: State =
         State::new_with_initial_state(&step_config, num_state_nodes, t0, &Q, &V, &A);
 
@@ -280,27 +293,30 @@ fn test_rotating_beam() {
     let num_steps = (tf / h).ceil() as usize + 1;
 
     for i in 0..num_steps {
+        // for i in 0..num_steps {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
         let rotz = omega * (t + h) + rot0;
-        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rotz));
+        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(rotz);
         elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
 
         // Solve time step
-        match solver.step(&mut elem) {
+        match solver.step(&mut elem, i) {
             None => {
                 print!("{:.3}s: failed to converge \n", solver.state.time() + h);
                 break;
             }
             Some(iter_data) => {
                 let t = solver.state.time();
+                let rotz_deg = (rotz * 180. / PI);
                 print!(
-                    "Step {:3}, t={:.3}s: converged in {:2} iterations ({:.5} rad)\n",
+                    "Step {:3}, t={:.3}s: converged in {:2} iterations ([{:.3}, {:.3}, {:.3}] rad, [{:.2}, {:.2}, {:.2}] deg)\n",
                     i,
                     t,
                     iter_data.len(),
-                    rotz
+                    rotz[0], rotz[1], rotz[2],
+                    rotz_deg[0], rotz_deg[1], rotz_deg[2]
                 );
                 states.push(solver.state.clone());
 
@@ -352,7 +368,12 @@ fn test_rotating_beam() {
             byte_order: ByteOrder::LittleEndian,
             file_path: None,
             data: DataSet::inline(UnstructuredGridPiece {
-                points: IOBuffer::F64((&elem.nodes.u + &elem.nodes.x0).as_slice().to_vec()),
+                points: IOBuffer::F64(
+                    (&elem.nodes.u + &elem.nodes.x0)
+                        .iter()
+                        .map(|&v| ((v * 1.0e7).round() / 1.0e7))
+                        .collect_vec(),
+                ),
                 cells: Cells {
                     cell_verts: VertexNumbers::XML {
                         connectivity: {
