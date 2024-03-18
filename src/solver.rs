@@ -2,6 +2,8 @@
 
 use std::ops::Div;
 
+use std::io::Write;
+
 use crate::prelude::*;
 
 use crate::element::gebt::Element;
@@ -291,8 +293,8 @@ impl GeneralizedAlphaSolver {
                 self.St
                     .view_mut((num_node_dofs, 0), (num_constraint_dofs, num_node_dofs))
                     .add_assign(&B * &T);
-                // Quadrant 2,1
 
+                // Quadrant 2,1
                 self.St
                     .view_mut((0, num_node_dofs), (num_node_dofs, num_constraint_dofs))
                     .add_assign(&B.transpose());
@@ -326,30 +328,30 @@ impl GeneralizedAlphaSolver {
             x.component_mul_assign(&self.DR_diag);
             let delta_x: Matrix6xX = Matrix6xX::from_column_slice(x.as_slice());
 
-            if iter > -1 {
-                let mut f = std::fs::File::create(format!(
-                    "iter/step_{:0>3}_iter_{:0>2}_elem.json",
-                    i, iter
-                ))
-                .unwrap();
-                serde_json::to_writer_pretty(f, elem).expect("fail");
-                let mut f =
-                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_St.json", i, iter))
-                        .unwrap();
-                serde_json::to_writer_pretty(f, &self.St).expect("fail");
-                let mut f =
-                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_R.json", i, iter))
-                        .unwrap();
-                serde_json::to_writer_pretty(f, &self.R).expect("fail");
-                let mut f =
-                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_x.json", i, iter))
-                        .unwrap();
-                serde_json::to_writer_pretty(f, &x).expect("fail");
-                let mut f =
-                    std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_q.json", i, iter))
-                        .unwrap();
-                serde_json::to_writer_pretty(f, &state_next.q).expect("fail");
-            }
+            // if iter > -1 {
+            //     let mut f = std::fs::File::create(format!(
+            //         "iter/step_{:0>3}_iter_{:0>2}_elem.json",
+            //         i, iter
+            //     ))
+            //     .unwrap();
+            //     serde_json::to_writer_pretty(f, elem).expect("fail");
+            //     let mut f =
+            //         std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_St.json", i, iter))
+            //             .unwrap();
+            //     serde_json::to_writer_pretty(f, &self.St).expect("fail");
+            //     let mut f =
+            //         std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_R.json", i, iter))
+            //             .unwrap();
+            //     serde_json::to_writer_pretty(f, &self.R).expect("fail");
+            //     let mut f =
+            //         std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_x.json", i, iter))
+            //             .unwrap();
+            //     serde_json::to_writer_pretty(f, &x).expect("fail");
+            //     let mut f =
+            //         std::fs::File::create(format!("iter/step_{:0>3}_iter_{:0>2}_q.json", i, iter))
+            //             .unwrap();
+            //     serde_json::to_writer_pretty(f, &state_next.q).expect("fail");
+            // }
 
             // Check for convergence
             // let energy_increment = self.R.dot(&x).abs();

@@ -220,23 +220,20 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
 #[test]
 fn test_rotating_beam() {
     // Solver parameters
-    let rho_inf: f64 = 1.0;
-    let tf: f64 = 0.5;
+    let rho_inf: f64 = 0.9;
+    let tf: f64 = 10.;
     let h: f64 = 0.01;
-    let omega = 4.; // rad/s
-    let is_dynamic_solve = false;
+    let omega: Vector3 = Vector3::new(0., 0., 1.); // rad/s
+    let is_dynamic_solve = true;
+    let num_constraint_nodes = 1;
+    let omega_init_scale = 0.5;
 
     let mut elem = build_element();
-
-    // Number of system and constraint nodes
     let num_system_nodes = elem.nodes.num;
-    let num_constraint_nodes = 1;
 
-    let rot0 = 0.;
-    // let rot0 = 5. * PI / 4.;
-    let rot0 = PI / 2.;
-    // let rot0 = 3.;
-    let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot0));
+    let rot0 = Vector3::new(0., 0., 0.);
+    // let rot0 = Vector3::new(0., 0., PI);
+    let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(rot0);
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -245,15 +242,27 @@ fn test_rotating_beam() {
     // Gravity loading
     let gravity: Vector3 = Vector3::new(0., 0., 0.);
 
-    // Create initial state
+    // Initial displacement
     let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
     for (i, mut c) in Q.column_iter_mut().enumerate() {
         c.rows_mut(0, 3)
             .copy_from(&(r0 * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
         c.rows_mut(3, 4).copy_from(&r0.wijk());
     }
-    let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+
+    // Initial velocity
+    let mut V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+    let omega_init = omega * omega_init_scale;
+    for (i, mut c) in V.column_iter_mut().enumerate() {
+        c.rows_mut(0, 3)
+            .copy_from(&(omega_init.cross(&elem.nodes.x0.column(i))));
+        c.rows_mut(3, 3).copy_from(&omega_init);
+    }
+
+    // Initial acceleration
     let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+
+    // Inital state
     let mut state: State =
         State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
 
@@ -277,26 +286,13 @@ fn test_rotating_beam() {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
-        let rot_z = omega * t + rot0;
-        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., rot_z));
+        let rotz = omega * (t + h) + rot0;
+        let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(rotz);
         elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
 
-        let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        forces[(2, elem.nodes.num - 1)] = 10.;
-        elem.apply_force(&forces);
-
-        // let r0: UnitQuaternion =
-        //     UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., omega * (t - h) + rot0));
-        // let mut Q: Matrix7xX = Matrix7xX::zeros(elem.nodes.num);
-        // for (i, mut c) in Q.column_iter_mut().enumerate() {
-        //     c.rows_mut(0, 3)
-        //         .copy_from(&(r0 * elem.nodes.x0.column(i) - elem.nodes.x0.column(i)));
-        //     c.rows_mut(3, 4).copy_from(&r0.wijk());
-        // }
-        // let V: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        // let A: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
-        // let mut state: State =
-        //     State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
+        // let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
+        // forces[(2, elem.nodes.num - 1)] = 10.;
+        // elem.apply_force(&forces);
 
         // Solve time step
         match solver.step(i, &mut elem, &state) {
@@ -305,30 +301,32 @@ fn test_rotating_beam() {
                 break;
             }
             Some((state_next, iter_data)) => {
+                let rotz_deg = rotz * 180. / PI;
                 print!(
-                    "Step {:3}, t={:.3}s: converged in {:2} iterations ({:.5} rad)\n",
+                    "Step {:3}, t={:.3}s: converged in {:2} iterations ([{:.3}, {:.3}, {:.3}] rad, [{:.2}, {:.2}, {:.2}] deg)\n",
                     i,
                     t,
                     iter_data.len(),
-                    rot_z
+                    rotz[0], rotz[1], rotz[2],
+                    rotz_deg[0], rotz_deg[1], rotz_deg[2]
                 );
 
-                file.write_fmt(format_args!("{:?}", t)).expect("fail");
-                file.write_fmt(format_args!(",{:?}", iter_data.len()))
-                    .expect("fail");
-                for &v in state_next.q.iter() {
-                    file.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                }
-                file.write_all(b"\n").expect("fail");
+                // file.write_fmt(format_args!("{:?}", t)).expect("fail");
+                // file.write_fmt(format_args!(",{:?}", iter_data.len()))
+                //     .expect("fail");
+                // for &v in state_next.q.iter() {
+                //     file.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                // }
+                // file.write_all(b"\n").expect("fail");
 
-                let mut f = std::fs::File::create(format!("iter/step_{:0>3}_x.csv", i)).unwrap();
-                for (i, iter_data) in iter_data.iter().enumerate() {
-                    f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
-                    for &v in iter_data.x.iter() {
-                        f.write_fmt(format_args!(",{:?}", v)).expect("fail");
-                    }
-                    f.write_all(b"\n").expect("fail");
-                }
+                // let mut f = std::fs::File::create(format!("iter/step_{:0>3}_x.csv", i)).unwrap();
+                // for (i, iter_data) in iter_data.iter().enumerate() {
+                //     f.write_fmt(format_args!("{:?}", i + 1)).expect("fail");
+                //     for &v in iter_data.x.iter() {
+                //         f.write_fmt(format_args!(",{:?}", v)).expect("fail");
+                //     }
+                //     f.write_all(b"\n").expect("fail");
+                // }
 
                 elem.to_vtk()
                     .export_ascii(format!("iter/step_{:0>3}.vtk", i))
