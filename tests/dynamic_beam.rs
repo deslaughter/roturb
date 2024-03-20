@@ -22,7 +22,7 @@ fn build_element() -> Element {
     // let gq = Quadrature::gauss_legendre_lobotto(10); // Nodal quadrature
 
     // Node initial position and rotation
-    let fx = |s: f64| -> f64 { 10. * s };
+    let fx = |s: f64| -> f64 { 10. * s + 2. };
     let mut x0: Matrix3xX = Matrix3xX::zeros(num_nodes);
     for (mut c, &si) in x0.column_iter_mut().zip(s.iter()) {
         c[0] = fx(si);
@@ -219,21 +219,37 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
 
 #[test]
 fn test_rotating_beam() {
+    // let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
+    let _ = std::fs::remove_dir_all("iter");
+    std::fs::create_dir("iter").unwrap();
+
     // Solver parameters
     let rho_inf: f64 = 0.9;
     let tf: f64 = 10.;
     let h: f64 = 0.01;
     let omega: Vector3 = Vector3::new(0., 0., 1.); // rad/s
     let is_dynamic_solve = true;
-    let num_constraint_nodes = 1;
-    let omega_init_scale = 0.5;
 
-    let mut elem = build_element();
-    let num_system_nodes = elem.nodes.num;
+    // let omega_init_scale = 0.5;
+    let omega_init_scale = 1.1;
 
     let rot0 = Vector3::new(0., 0., 0.);
-    // let rot0 = Vector3::new(0., 0., PI);
     let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(rot0);
+
+    // Create element
+    let mut elem = build_element();
+
+    // Add hub constraint
+    let r0_wijk = r0.wijk();
+    elem.add_rigid_constraint(
+        0,
+        Vector7::from_vec(vec![
+            0., 0., 0., r0_wijk[0], r0_wijk[1], r0_wijk[2], r0_wijk[3],
+        ]),
+    );
+
+    let num_system_nodes = elem.nodes.num;
+    let num_constraint_nodes = elem.constraints.len();
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -266,6 +282,9 @@ fn test_rotating_beam() {
     let mut state: State =
         State::new_with_initial_state(num_system_nodes, num_constraint_nodes, &Q, &V, &A);
 
+    elem.update_states(&Q, &V, &A, &Vector3::zeros());
+    elem.to_vtk().export_ascii("iter/step_000.vtk").unwrap();
+
     // Create generalized alpha solver
     let mut solver = GeneralizedAlphaSolver::new(
         num_system_nodes,
@@ -276,19 +295,21 @@ fn test_rotating_beam() {
         is_dynamic_solve,
     );
 
-    let mut file = std::fs::File::create("q_rot.csv").expect("file failure");
-    let _ = std::fs::remove_dir_all("iter");
-    std::fs::create_dir("iter").unwrap();
-
     let num_steps = (tf / h).ceil() as usize + 1;
 
     for i in 1..num_steps {
         let t = (i as f64) * h;
 
         // Prescribe element root displacement
-        let rotz = omega * (t + h) + rot0;
+        let rotz = omega * (t) + rot0;
         let r: UnitQuaternion = UnitQuaternion::from_scaled_axis(rotz);
-        elem.q_root.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
+        // elem.q_hub.fixed_rows_mut::<4>(3).copy_from(&r.wijk());
+        if elem.constraints.len() > 0 {
+            elem.constraints[0]
+                .q
+                .fixed_rows_mut::<4>(3)
+                .copy_from(&r.wijk());
+        }
 
         // let mut forces: Matrix6xX = Matrix6xX::zeros(elem.nodes.num);
         // forces[(2, elem.nodes.num - 1)] = 10.;

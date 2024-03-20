@@ -237,7 +237,7 @@ impl GeneralizedAlphaSolver {
         for iter in 0..20 {
             // If no constraints, prescribe the root displacement on node 1
             if self.num_constraint_nodes == 0 {
-                state_next.q.column_mut(0).copy_from(&elem.q_root);
+                // state_next.q.column_mut(0).copy_from(&elem.q_root);
             }
 
             // Update state in element
@@ -275,14 +275,14 @@ impl GeneralizedAlphaSolver {
             // If there are constraint nodes
             if self.num_constraint_nodes > 0 {
                 // Get constraints_gradient_matrix
-                let B: Matrix6xX = elem.constraints_gradient_matrix();
+                let B: MatrixX = elem.constraints_gradient_matrix();
 
                 // Get constraints residual vector
                 let F_C: VectorD =
                     B.transpose() * &VectorD::from_column_slice(state_next.lambda.as_slice());
 
                 // Get constraint_residual_vector
-                let Phi: Vector6 = elem.constraint_residual_vector();
+                let Phi: VectorN = elem.constraint_residual_vector();
 
                 self.R
                     .rows_mut(num_node_dofs, num_constraint_dofs)

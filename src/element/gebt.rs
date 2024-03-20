@@ -10,20 +10,53 @@ use serde::Serialize;
 use vtkio::model::*; // import model definition of a VTK file
 
 //------------------------------------------------------------------------------
+// Constraints
+//------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Constraint {
+    node_index: usize,
+    x0: Vector3,
+    r0: Vector4,
+    xi: Vector3,    // Difference in initial position
+    ri: Matrix3,    // Difference in initial rotation
+    pub q: Vector7, // Translation/rotation displacement
+}
+
+//------------------------------------------------------------------------------
 // Element
 //------------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 pub struct Element {
-    pub q_root: Vector7,
     pub nodes: Nodes,
     pub qps: Vec<QuadraturePoint>,
     pub shape_func_interp: MatrixNxQ,
     pub shape_func_deriv: MatrixNxQ,
     pub jacobian: Matrix1xX,
+    pub constraints: Vec<Constraint>,
 }
 
 impl Element {
+    pub fn add_rigid_constraint(&mut self, node_index: usize, ref_x0: Vector7) {
+        let A_x0: Vector3 = ref_x0.fixed_rows::<3>(0).clone_owned();
+        let A_r0: Vector4 = ref_x0.fixed_rows::<4>(3).clone_owned();
+        let B_x0: Vector3 = self.nodes.x0.fixed_columns::<1>(node_index).clone_owned();
+        let B_r0: Vector4 = self.nodes.r0.fixed_columns::<1>(node_index).clone_owned();
+
+        self.constraints.push(Constraint {
+            node_index,
+            x0: A_x0,
+            r0: A_r0,
+            xi: B_x0 - A_x0, // Difference in initial position
+            ri: (A_r0.as_unit_quaternion().inverse() * B_r0.as_unit_quaternion())
+                .to_rotation_matrix()
+                .matrix()
+                .clone_owned(), // Difference in initial rotation
+            q: Vector7::zeros(),
+        })
+    }
+
     pub fn update_states(&mut self, Q: &Matrix7xX, V: &Matrix6xX, A: &Matrix6xX, g: &Vector3) {
         // Save node displacement and rotation
         self.nodes.u.copy_from(&Q.fixed_rows::<3>(0));
@@ -181,10 +214,14 @@ impl Element {
         VectorD::from_column_slice(V.as_slice())
     }
 
+    //--------------------------------------------------------------------------
+    // Tangent operator based constraint
+    //--------------------------------------------------------------------------
+
     fn root_relative_rotation(&self) -> Vector3 {
         // Root rotation as unit quaternions
-        let R_root = self
-            .q_root
+        let R_root = self.constraints[0]
+            .q
             .fixed_rows::<4>(3)
             .clone_owned()
             .as_unit_quaternion();
@@ -198,25 +235,170 @@ impl Element {
         (R_n1 * R_root.inverse()).scaled_axis()
     }
 
-    pub fn constraint_residual_vector(&self) -> Vector6 {
+    pub fn constraint_residual_vector1(&self) -> VectorN {
         let R_diff = self.root_relative_rotation();
-        Vector6::new(
-            self.nodes.u[0] - self.q_root[0],
-            self.nodes.u[1] - self.q_root[1],
-            self.nodes.u[2] - self.q_root[2],
+        VectorN::from_vec(vec![
+            self.nodes.u[0] - self.constraints[0].q[0],
+            self.nodes.u[1] - self.constraints[0].q[1],
+            self.nodes.u[2] - self.constraints[0].q[2],
             R_diff[0],
             R_diff[1],
             R_diff[2],
-        )
+        ])
     }
 
-    pub fn constraints_gradient_matrix(&self) -> Matrix6xX {
-        let mut B = Matrix6xX::zeros(self.nodes.num * 6);
+    pub fn constraints_gradient_matrix1(&self) -> MatrixN {
+        let mut B: MatrixN = MatrixN::zeros(6 * self.constraints.len(), self.nodes.num * 6);
         let R_diff = self.root_relative_rotation();
         B.fixed_view_mut::<3, 3>(0, 0)
             .copy_from(&Matrix3::identity());
         B.fixed_view_mut::<3, 3>(3, 3)
             .copy_from(&R_diff.tangent_matrix());
+        B
+    }
+
+    //--------------------------------------------------------------------------
+    // Mike's Constraints
+    //--------------------------------------------------------------------------
+
+    pub fn constraint_residual_vector(&self) -> VectorN {
+        let residual_vector = VectorN::from_column_slice(
+            self.constraints
+                .iter()
+                .flat_map(|c| {
+                    let R_BC: Matrix3 =
+                        c.q.fixed_rows::<4>(3)
+                            .clone_owned()
+                            .as_unit_quaternion()
+                            .to_rotation_matrix()
+                            .matrix()
+                            .clone_owned();
+
+                    let R: Matrix3 = self
+                        .nodes
+                        .r
+                        .fixed_columns::<1>(c.node_index)
+                        .clone_owned()
+                        .as_unit_quaternion()
+                        .to_rotation_matrix()
+                        .matrix()
+                        .clone_owned();
+
+                    let x_phi = self.nodes.u.fixed_columns::<1>(0) + c.xi
+                        - R_BC * c.xi
+                        - c.q.fixed_rows::<3>(0);
+                    let r_phi: Vector3 = (R - R_BC).axial();
+
+                    vec![x_phi[0], x_phi[1], x_phi[2], r_phi[0], r_phi[1], r_phi[2]]
+                })
+                .collect_vec()
+                .as_ref(),
+        );
+        residual_vector
+    }
+
+    pub fn constraints_gradient_matrix(&self) -> MatrixX {
+        let mut B = MatrixX::zeros(6 * self.constraints.len(), self.nodes.num * 6);
+        for c in self.constraints.iter() {
+            let mut block: Matrix6 = Matrix6::identity();
+            let R: Matrix3 = self
+                .nodes
+                .r
+                .fixed_columns::<1>(c.node_index)
+                .clone_owned()
+                .as_unit_quaternion()
+                .to_rotation_matrix()
+                .matrix()
+                .clone_owned();
+            block
+                .fixed_view_mut::<3, 3>(3, 3)
+                .copy_from(&((R.trace() * Matrix3::identity() - R) / 2.));
+            B.fixed_view_mut::<6, 6>(c.node_index * 6, c.node_index * 6)
+                .copy_from(&block)
+        }
+        B
+    }
+
+    //--------------------------------------------------------------------------
+    // SonnevilleBruls2012 Constraints
+    //--------------------------------------------------------------------------
+
+    pub fn constraint_residual_vector3(&self) -> VectorN {
+        let residual_vector = VectorN::from_column_slice(
+            self.constraints
+                .iter()
+                .flat_map(|c| {
+                    // Get displacement and rotation from constraint source
+                    let x_A: Vector3 = c.q.fixed_rows::<3>(0).clone_owned() + c.x0;
+                    let R_A: UnitQuaternion =
+                        c.q.fixed_rows::<4>(3).clone_owned().as_unit_quaternion();
+
+                    // Get displacement and rotation for node
+                    let x_B: Vector3 = self.nodes.u.fixed_columns::<1>(c.node_index).clone_owned()
+                        + self.nodes.x0.fixed_columns::<1>(c.node_index);
+                    let R_B: UnitQuaternion = self
+                        .nodes
+                        .r
+                        .fixed_columns::<1>(c.node_index)
+                        .clone_owned()
+                        .as_unit_quaternion()
+                        * self
+                            .nodes
+                            .r0
+                            .fixed_columns::<1>(c.node_index)
+                            .clone_owned()
+                            .as_unit_quaternion();
+
+                    // Calculate difference in position
+                    let x_phi = R_B.inverse() * (R_A * c.xi + x_A - x_B);
+
+                    // Calculate difference in rotation
+                    let R_phi = (R_A.inverse() * R_B)
+                        .to_rotation_matrix()
+                        .matrix()
+                        .clone_owned();
+
+                    // Assemble residual vector for this constraint
+                    let (e_AB1, e_AB2, e_AB3) = (
+                        R_phi.fixed_columns::<1>(0),
+                        R_phi.fixed_columns::<1>(1),
+                        R_phi.fixed_columns::<1>(2),
+                    );
+                    let (e_I1, e_I2, e_I3) = (
+                        c.ri.fixed_columns::<1>(0),
+                        c.ri.fixed_columns::<1>(1),
+                        c.ri.fixed_columns::<1>(2),
+                    );
+                    vec![
+                        x_phi[0],
+                        x_phi[1],
+                        x_phi[2],
+                        (e_AB3.dot(&e_I2) - e_AB2.dot(&e_I3)) / 2.,
+                        (e_AB1.dot(&e_I3) - e_AB3.dot(&e_I1)) / 2.,
+                        (e_AB2.dot(&e_I1) - e_AB1.dot(&e_I2)) / 2.,
+                    ]
+                })
+                .collect_vec()
+                .as_ref(),
+        );
+        residual_vector
+    }
+
+    pub fn constraints_gradient_matrix3(&self) -> MatrixN {
+        let mut B = MatrixN::zeros(6 * self.constraints.len(), self.nodes.num * 6);
+        for c in self.constraints.iter() {
+            let mut block: Matrix6 = Matrix6::identity();
+            block
+                .fixed_view_mut::<3, 3>(0, 0)
+                .copy_from(&c.ri.transpose());
+            block
+                .fixed_view_mut::<3, 3>(0, 3)
+                .copy_from(&(-c.xi.tilde() * c.ri.transpose()));
+            block
+                .fixed_view_mut::<3, 3>(3, 3)
+                .copy_from(&c.ri.transpose());
+            block.fill_diagonal(-1.);
+        }
         B
     }
 
@@ -275,6 +457,38 @@ impl Element {
                                 ),
                             })
                         })
+                        .chain(vec![
+                            Attribute::DataArray(DataArrayBase {
+                                name: "AngularVelocity".to_string(),
+                                elem: ElementType::Vectors,
+                                data: IOBuffer::F32(
+                                    self.nodes
+                                        .omega
+                                        .column_iter()
+                                        .flat_map(|c| {
+                                            c.iter()
+                                                .map(|&v| ((v * 1.0e7) / 1.0e7) as f32)
+                                                .collect_vec()
+                                        })
+                                        .collect_vec(),
+                                ),
+                            }),
+                            Attribute::DataArray(DataArrayBase {
+                                name: "TranslationalVelocity".to_string(),
+                                elem: ElementType::Vectors,
+                                data: IOBuffer::F32(
+                                    self.nodes
+                                        .u_dot
+                                        .column_iter()
+                                        .flat_map(|c| {
+                                            c.iter()
+                                                .map(|&v| ((v * 1.0e7) / 1.0e7) as f32)
+                                                .collect_vec()
+                                        })
+                                        .collect_vec(),
+                                ),
+                            }),
+                        ])
                         .collect_vec(),
                     ..Default::default()
                 },
@@ -407,23 +621,14 @@ impl Nodes {
             })
             .collect();
 
-        // Initialize q_root to the first node position and rotation
-        let mut q_root: Vector7 = Vector7::zeros();
-        q_root
-            .fixed_rows_mut::<3>(0)
-            .copy_from(&self.x0.fixed_columns::<1>(0));
-        q_root
-            .fixed_rows_mut::<4>(3)
-            .copy_from(&self.r0.fixed_columns::<1>(0));
-
         // Build and return element
         Element {
-            q_root: q_root,
             nodes: self.clone(),
             qps,
             shape_func_interp,
             shape_func_deriv,
             jacobian,
+            constraints: vec![],
         }
     }
 }
@@ -1124,8 +1329,12 @@ mod tests {
         elem.update_states(&Q, &V, &A, &g);
 
         // Get constraints_gradient_matrix
-        let B: Matrix6xX = elem.constraints_gradient_matrix();
-        assert_relative_eq!(B.columns(0, 6), Matrix6::identity().columns(0, 6));
+        // TODO update with new values
+        let B: MatrixX = elem.constraints_gradient_matrix();
+        assert_relative_eq!(
+            B.fixed_view::<6, 6>(0, 0).clone_owned(),
+            Matrix6::identity()
+        );
 
         // Get residual vector
         let R: VectorN = elem.R_FE();
@@ -1139,8 +1348,8 @@ mod tests {
         );
 
         // Get constraint_residual_vector
-        let Phi: Vector6 = elem.constraint_residual_vector();
-        assert_relative_eq!(Phi, Vector6::zeros());
+        let Phi: VectorN = elem.constraint_residual_vector();
+        assert_relative_eq!(Phi, VectorN::zeros(6));
 
         // Static iteration matrix
         let K_FE: MatrixN = elem.K_E();

@@ -19,6 +19,9 @@ pub type Matrix6 = nalgebra::Matrix6<f64>;
 /// Matrix (3 x 4)
 pub type Matrix3x4 = nalgebra::Matrix3x4<f64>;
 
+// Matrix of dynamic size
+pub type MatrixX = nalgebra::OMatrix<f64, Dyn, Dyn>;
+
 /// Matrix (Nodes x Nodes)
 pub type MatrixN = nalgebra::OMatrix<f64, Dyn, Dyn>;
 
@@ -56,6 +59,20 @@ pub type Rotation3 = nalgebra::Rotation3<f64>;
 //------------------------------------------------------------------------------
 // Traits
 //------------------------------------------------------------------------------
+
+pub trait ExtMatrix3 {
+    fn axial(&self) -> Vector3;
+}
+
+impl ExtMatrix3 for Matrix3 {
+    fn axial(&self) -> Vector3 {
+        Vector3::new(
+            self[(2, 1)] - self[(1, 2)],
+            self[(0, 2)] - self[(2, 0)],
+            self[(1, 0)] - self[(0, 1)],
+        ) / 2.
+    }
+}
 
 pub trait VecToQuatExt {
     fn as_quaternion(&self) -> Quaternion;
