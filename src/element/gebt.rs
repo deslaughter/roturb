@@ -16,10 +16,8 @@ use vtkio::model::*; // import model definition of a VTK file
 #[derive(Debug, Clone, Serialize)]
 pub struct Constraint {
     node_index: usize,
-    x0: Vector3,
-    r0: Vector4,
-    xi: Vector3,    // Difference in initial position
-    ri: Matrix3,    // Difference in initial rotation
+    X0: Vector3,    // Difference in initial position
+    R0: Matrix3,    // Difference in initial rotation
     pub q: Vector7, // Translation/rotation displacement
 }
 
@@ -46,10 +44,8 @@ impl Element {
 
         self.constraints.push(Constraint {
             node_index,
-            x0: A_x0,
-            r0: A_r0,
-            xi: B_x0 - A_x0, // Difference in initial position
-            ri: (A_r0.as_unit_quaternion().inverse() * B_r0.as_unit_quaternion())
+            X0: B_x0 - A_x0, // Difference in initial position
+            R0: (A_r0.as_unit_quaternion().inverse() * B_r0.as_unit_quaternion())
                 .to_rotation_matrix()
                 .matrix()
                 .clone_owned(), // Difference in initial rotation
@@ -215,49 +211,6 @@ impl Element {
     }
 
     //--------------------------------------------------------------------------
-    // Tangent operator based constraint
-    //--------------------------------------------------------------------------
-
-    fn root_relative_rotation(&self) -> Vector3 {
-        // Root rotation as unit quaternions
-        let R_root = self.constraints[0]
-            .q
-            .fixed_rows::<4>(3)
-            .clone_owned()
-            .as_unit_quaternion();
-        // Node 1 rotation as unit quaternions
-        let R_n1 = self
-            .nodes
-            .r
-            .fixed_columns::<1>(0)
-            .clone_owned()
-            .as_unit_quaternion();
-        (R_n1 * R_root.inverse()).scaled_axis()
-    }
-
-    pub fn constraint_residual_vector1(&self) -> VectorN {
-        let R_diff = self.root_relative_rotation();
-        VectorN::from_vec(vec![
-            self.nodes.u[0] - self.constraints[0].q[0],
-            self.nodes.u[1] - self.constraints[0].q[1],
-            self.nodes.u[2] - self.constraints[0].q[2],
-            R_diff[0],
-            R_diff[1],
-            R_diff[2],
-        ])
-    }
-
-    pub fn constraints_gradient_matrix1(&self) -> MatrixN {
-        let mut B: MatrixN = MatrixN::zeros(6 * self.constraints.len(), self.nodes.num * 6);
-        let R_diff = self.root_relative_rotation();
-        B.fixed_view_mut::<3, 3>(0, 0)
-            .copy_from(&Matrix3::identity());
-        B.fixed_view_mut::<3, 3>(3, 3)
-            .copy_from(&R_diff.tangent_matrix());
-        B
-    }
-
-    //--------------------------------------------------------------------------
     // Mike's Constraints
     //--------------------------------------------------------------------------
 
@@ -266,6 +219,7 @@ impl Element {
             self.constraints
                 .iter()
                 .flat_map(|c| {
+                    // Relative rotation of reference node
                     let R_BC: Matrix3 =
                         c.q.fixed_rows::<4>(3)
                             .clone_owned()
@@ -274,6 +228,7 @@ impl Element {
                             .matrix()
                             .clone_owned();
 
+                    // Relative rotation of constrained node
                     let R: Matrix3 = self
                         .nodes
                         .r
@@ -284,10 +239,11 @@ impl Element {
                         .matrix()
                         .clone_owned();
 
-                    let x_phi = self.nodes.u.fixed_columns::<1>(0) + c.xi
-                        - R_BC * c.xi
-                        - c.q.fixed_rows::<3>(0);
-                    let r_phi: Vector3 = (R - R_BC).axial();
+                    // Displacement of constrained node
+                    let u: Vector3 = self.nodes.u.fixed_columns::<1>(c.node_index).clone_owned();
+
+                    let x_phi: Vector3 = u + c.X0 - R_BC * c.X0;
+                    let r_phi: Vector3 = (R * R_BC.transpose()).axial();
 
                     vec![x_phi[0], x_phi[1], x_phi[2], r_phi[0], r_phi[1], r_phi[2]]
                 })
@@ -300,7 +256,19 @@ impl Element {
     pub fn constraints_gradient_matrix(&self) -> MatrixX {
         let mut B = MatrixX::zeros(6 * self.constraints.len(), self.nodes.num * 6);
         for c in self.constraints.iter() {
+            // Create identity block matrix
             let mut block: Matrix6 = Matrix6::identity();
+
+            // Relative rotation of reference node
+            let R_BC: Matrix3 =
+                c.q.fixed_rows::<4>(3)
+                    .clone_owned()
+                    .as_unit_quaternion()
+                    .to_rotation_matrix()
+                    .matrix()
+                    .clone_owned();
+
+            // Relative rotation of constrained node
             let R: Matrix3 = self
                 .nodes
                 .r
@@ -310,9 +278,15 @@ impl Element {
                 .to_rotation_matrix()
                 .matrix()
                 .clone_owned();
-            block
-                .fixed_view_mut::<3, 3>(3, 3)
-                .copy_from(&((R.trace() * Matrix3::identity() - R) / 2.));
+
+            // Gradient of axial(R*R_BC^T)
+            let R_grad: Matrix3 =
+                ((R * R_BC.transpose()).trace() * Matrix3::identity() - R * R_BC.transpose()) / 2.;
+
+            // Assemble block matrix
+            block.fixed_view_mut::<3, 3>(3, 3).copy_from(&R_grad);
+
+            // Add block to gradient matrix
             B.fixed_view_mut::<6, 6>(c.node_index * 6, c.node_index * 6)
                 .copy_from(&block)
         }
@@ -320,87 +294,8 @@ impl Element {
     }
 
     //--------------------------------------------------------------------------
-    // SonnevilleBruls2012 Constraints
+    // VTK output
     //--------------------------------------------------------------------------
-
-    pub fn constraint_residual_vector3(&self) -> VectorN {
-        let residual_vector = VectorN::from_column_slice(
-            self.constraints
-                .iter()
-                .flat_map(|c| {
-                    // Get displacement and rotation from constraint source
-                    let x_A: Vector3 = c.q.fixed_rows::<3>(0).clone_owned() + c.x0;
-                    let R_A: UnitQuaternion =
-                        c.q.fixed_rows::<4>(3).clone_owned().as_unit_quaternion();
-
-                    // Get displacement and rotation for node
-                    let x_B: Vector3 = self.nodes.u.fixed_columns::<1>(c.node_index).clone_owned()
-                        + self.nodes.x0.fixed_columns::<1>(c.node_index);
-                    let R_B: UnitQuaternion = self
-                        .nodes
-                        .r
-                        .fixed_columns::<1>(c.node_index)
-                        .clone_owned()
-                        .as_unit_quaternion()
-                        * self
-                            .nodes
-                            .r0
-                            .fixed_columns::<1>(c.node_index)
-                            .clone_owned()
-                            .as_unit_quaternion();
-
-                    // Calculate difference in position
-                    let x_phi = R_B.inverse() * (R_A * c.xi + x_A - x_B);
-
-                    // Calculate difference in rotation
-                    let R_phi = (R_A.inverse() * R_B)
-                        .to_rotation_matrix()
-                        .matrix()
-                        .clone_owned();
-
-                    // Assemble residual vector for this constraint
-                    let (e_AB1, e_AB2, e_AB3) = (
-                        R_phi.fixed_columns::<1>(0),
-                        R_phi.fixed_columns::<1>(1),
-                        R_phi.fixed_columns::<1>(2),
-                    );
-                    let (e_I1, e_I2, e_I3) = (
-                        c.ri.fixed_columns::<1>(0),
-                        c.ri.fixed_columns::<1>(1),
-                        c.ri.fixed_columns::<1>(2),
-                    );
-                    vec![
-                        x_phi[0],
-                        x_phi[1],
-                        x_phi[2],
-                        (e_AB3.dot(&e_I2) - e_AB2.dot(&e_I3)) / 2.,
-                        (e_AB1.dot(&e_I3) - e_AB3.dot(&e_I1)) / 2.,
-                        (e_AB2.dot(&e_I1) - e_AB1.dot(&e_I2)) / 2.,
-                    ]
-                })
-                .collect_vec()
-                .as_ref(),
-        );
-        residual_vector
-    }
-
-    pub fn constraints_gradient_matrix3(&self) -> MatrixN {
-        let mut B = MatrixN::zeros(6 * self.constraints.len(), self.nodes.num * 6);
-        for c in self.constraints.iter() {
-            let mut block: Matrix6 = Matrix6::identity();
-            block
-                .fixed_view_mut::<3, 3>(0, 0)
-                .copy_from(&c.ri.transpose());
-            block
-                .fixed_view_mut::<3, 3>(0, 3)
-                .copy_from(&(-c.xi.tilde() * c.ri.transpose()));
-            block
-                .fixed_view_mut::<3, 3>(3, 3)
-                .copy_from(&c.ri.transpose());
-            block.fill_diagonal(-1.);
-        }
-        B
-    }
 
     pub fn to_vtk(&self) -> Vtk {
         let rotations: Vec<Matrix3> = self
