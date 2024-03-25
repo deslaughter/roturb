@@ -12,14 +12,13 @@ use roturb::{
     solver::{GeneralizedAlphaSolver, State},
 };
 
-fn build_element() -> Element {
+fn build_element(R0: UnitQuaternion) -> Element {
     let xi: VectorN = VectorN::from_vec(gauss_legendre_lobotto_points(5));
     let s: VectorN = xi.add_scalar(1.) / 2.;
     let num_nodes = s.len();
 
     // Quadrature rule
     let gq = Quadrature::gauss(7);
-    // let gq = Quadrature::gauss_legendre_lobotto(10); // Nodal quadrature
 
     // Node initial position and rotation
     let fx = |s: f64| -> f64 { 10. * s + 2. };
@@ -27,8 +26,14 @@ fn build_element() -> Element {
     for (mut c, &si) in x0.column_iter_mut().zip(s.iter()) {
         c[0] = fx(si);
     }
+    let x_root = x0.fixed_columns::<1>(0).clone_owned();
+    for mut c in x0.column_iter_mut() {
+        c.copy_from(&(R0 * (&c - x_root) + x_root));
+    }
     let mut r0: Matrix4xX = Matrix4xX::zeros(num_nodes);
-    r0.fixed_rows_mut::<1>(0).fill(1.);
+    for mut c in r0.column_iter_mut() {
+        c.copy_from(&R0.wijk());
+    }
 
     // Create material
     let mat = Material {
@@ -72,7 +77,7 @@ fn test_cantilever_beam_with_with_sin_load() {
     let h: f64 = 0.005;
     let is_dynamic_solve = true;
 
-    let mut elem = build_element();
+    let mut elem = build_element(UnitQuaternion::identity());
 
     //--------------------------------------------------------------------------
     // Test solve of element with initial displacement
@@ -137,9 +142,6 @@ fn test_cantilever_beam_with_with_sin_load() {
             }
         }
     }
-
-    // Assert that solver finished simulation
-    // assert_relative_eq!(solver.state.t, tf, epsilon = 1e-8);
 }
 
 #[test]
@@ -150,7 +152,7 @@ fn test_cantilever_beam_with_with_sin_load_dirichlet_bc() {
     let h: f64 = 0.005;
     let is_dynamic_solve = true;
 
-    let mut elem = build_element();
+    let mut elem = build_element(UnitQuaternion::identity());
 
     //--------------------------------------------------------------------------
     // Create element and solver
@@ -227,26 +229,22 @@ fn test_rotating_beam() {
     let rho_inf: f64 = 0.9;
     let tf: f64 = 10.;
     let h: f64 = 0.01;
-    let omega: Vector3 = Vector3::new(0., 0., 1.); // rad/s
+    let omega: Vector3 = Vector3::new(0., 0., 0.5); // rad/s
     let is_dynamic_solve = true;
 
-    // let omega_init_scale = 0.5;
-    let omega_init_scale = 1.1;
+    let omega_init_scale = 0.; // Zero for no velocity initialization
 
-    let rot0 = Vector3::new(0., 0., 0.);
+    let rot0: Vector3 = Vector3::new(0., 0., 0.);
     let r0: UnitQuaternion = UnitQuaternion::from_scaled_axis(rot0);
 
+    // Cone angle
+    let R_cone = UnitQuaternion::from_scaled_axis(Vector3::new(0., 0., 0.));
+
     // Create element
-    let mut elem = build_element();
+    let mut elem = build_element(R_cone);
 
     // Add hub constraint
-    let r0_wijk = r0.wijk();
-    elem.add_rigid_constraint(
-        0,
-        Vector7::from_vec(vec![
-            0., 0., 0., r0_wijk[0], r0_wijk[1], r0_wijk[2], r0_wijk[3],
-        ]),
-    );
+    elem.add_rigid_constraint(0, Vector7::from_vec(vec![0., 0., 0., 1., 0., 0., 0.]));
 
     let num_system_nodes = elem.nodes.num;
     let num_constraint_nodes = elem.constraints.len();
@@ -271,7 +269,7 @@ fn test_rotating_beam() {
     let omega_init = omega * omega_init_scale;
     for (i, mut c) in V.column_iter_mut().enumerate() {
         c.rows_mut(0, 3)
-            .copy_from(&(omega_init.cross(&elem.nodes.x0.column(i))));
+            .copy_from(&(r0 * omega_init.cross(&elem.nodes.x0.column(i))));
         c.rows_mut(3, 3).copy_from(&omega_init);
     }
 
