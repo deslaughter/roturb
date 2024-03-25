@@ -45,10 +45,8 @@ impl Element {
         self.constraints.push(Constraint {
             node_index,
             X0: B_x0 - A_x0, // Difference in initial position
-            R0: (A_r0.as_unit_quaternion().inverse() * B_r0.as_unit_quaternion())
-                .to_rotation_matrix()
-                .matrix()
-                .clone_owned(), // Difference in initial rotation
+            R0: Matrix3::identity(),
+
             q: Vector7::zeros(),
         })
     }
@@ -209,10 +207,6 @@ impl Element {
         }
         VectorD::from_column_slice(V.as_slice())
     }
-
-    //--------------------------------------------------------------------------
-    // Mike's Constraints
-    //--------------------------------------------------------------------------
 
     pub fn constraint_residual_vector(&self) -> VectorN {
         let residual_vector = VectorN::from_column_slice(
@@ -902,10 +896,16 @@ mod tests {
         }
 
         // Gravity
-        let g = Vector3::zeros();
+        let g = Vector3::new(0., 0., 9.81);
 
         // Displace the element
         elem.update_states(&Q, &V, &A, &g);
+
+        // println!("{}", elem.qps[0].Guu);
+        // println!(
+        //     "{:?}",
+        //     elem.qps.iter().map(|qp| qp.Ouu.transpose()).collect_vec()
+        // );
 
         assert_relative_eq!(
             elem.qps[0].u,
